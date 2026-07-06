@@ -4,4 +4,5 @@ __pycache__/
 dataset/
 *.png
 !tests/fixtures/*.png
+!src/templates/*.png
 config.local.json

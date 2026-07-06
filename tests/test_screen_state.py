@@ -1,24 +1,37 @@
 import cv2
 import numpy as np
-from src.screen_state import classify, ScreenState
+import pytest
+from src.screen_state import classify, ScreenState, encounter_scores, _MATCH_THRESHOLD
 
 def _load(name): return cv2.imread(f"tests/fixtures/{name}")
 
-def test_map_fixture_classifies_as_map():
-    assert classify(_load("map.png")) == ScreenState.MAP
+# --- ENCOUNTER: must hold across DIFFERENT backgrounds (the flicker regression) ---
+@pytest.mark.parametrize("name", ["encounter.png", "encounter_dusk.png"])
+def test_encounter_fixtures_classify_as_encounter(name):
+    # encounter_dusk.png has a dusk/city background (not grass); keying on the
+    # background color used to flicker ENCOUNTER<->UNKNOWN here. UI anchors fix it.
+    assert classify(_load(name)) == ScreenState.ENCOUNTER
 
-def test_encounter_fixture_classifies_as_encounter():
-    assert classify(_load("encounter.png")) == ScreenState.ENCOUNTER
+# --- MAP fixtures must classify as MAP and NEVER as ENCOUNTER (dangerous) ---
+@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "radar0.png", "radar1.png"])
+def test_map_fixtures_classify_as_map(name):
+    result = classify(_load(name))
+    assert result != ScreenState.ENCOUNTER  # never throw balls on a map
+    assert result == ScreenState.MAP
 
-def test_map_after_catch_classifies_as_map():
-    assert classify(_load("map_after_catch.png")) == ScreenState.MAP
-
+# --- Safety fallback: images matching neither must land in UNKNOWN ---
 def test_solid_black_classifies_as_unknown():
-    # Safety fallback: an image matching neither encounter nor map must land in
-    # UNKNOWN, never be forced into ENCOUNTER/MAP (the catch loop only throws on
-    # ENCOUNTER). Solid black has saturation 0 -> fails both feature bands.
     assert classify(np.zeros((2388, 1080, 3), np.uint8)) == ScreenState.UNKNOWN
 
 def test_solid_gray_classifies_as_unknown():
-    # Solid mid-gray also has saturation 0 and hue 0 -> fails both bands.
     assert classify(np.full((2388, 1080, 3), 128, np.uint8)) == ScreenState.UNKNOWN
+
+# --- Assert the anchor-score margin directly (proves it is not on the edge) ---
+def test_encounter_anchor_score_margin():
+    # Both encounter backgrounds score well above threshold on ALL anchors...
+    for name in ["encounter.png", "encounter_dusk.png"]:
+        for s in encounter_scores(_load(name)):
+            assert s >= 0.95, f"{name} anchor score {s} unexpectedly low"
+    # ...and every map fixture scores well below threshold on at least one anchor.
+    for name in ["map.png", "map_after_catch.png", "radar0.png", "radar1.png"]:
+        assert min(encounter_scores(_load(name))) < _MATCH_THRESHOLD - 0.15
