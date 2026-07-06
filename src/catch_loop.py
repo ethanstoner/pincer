@@ -146,27 +146,37 @@ class CatchLoop:
 
     # --- recovery (NEVER throws) ------------------------------------------
     def _recover(self, state=None):
-        """Close whatever non-map screen we're on and get back to MAP.
+        """Get back to a playable screen after a mis-tap. INV-2: never throws.
 
-        the game IGNORES the Android back button, so a stuck gym / PokeStop is
-        closed by tapping the on-screen X (bottom-center) -- NOT key_back. We tap
-        close, briefly poll for MAP, and fall back to key_back. Fast retries
-        instead of one long stuck-timeout poll, so a mis-tap costs ~1s, not 15s.
-        INV-2: never throws (only taps close/back).
+        Rules, in order, per attempt:
+          - MAP or ENCOUNTER  -> done. We NEVER disrupt an encounter (no flee):
+            an encounter is a catch opportunity, so recovery just yields and the
+            next tick's throw loop handles it.
+          - close button visible (gym / PokeStop / menu) -> tap the on-screen X
+            (the game ignores the Android back button) and poll for a playable
+            screen.
+          - otherwise (UNKNOWN, no X: an encounter still loading, or a catch
+            animation) -> wait briefly and re-check. Deliberately NO key_back
+            here: pressing back on a mid-load encounter would flee it.
         """
+        playable = (ScreenState.MAP, ScreenState.ENCOUNTER)
         for _ in range(self._RECOVER_ATTEMPTS):
             img = self.device.screencap()
-            if img is not None and self.classifier(img) == ScreenState.MAP:
-                return  # already back on the map (don't tap close over the map)
-            self.device.tap(*self._pt("close_button"))
-            _, ok = self._poll(
-                lambda im: self.classifier(im) == ScreenState.MAP,
-                self._RECOVER_POLL_MS,
-            )
-            if ok:
+            if img is None:
+                self._sleep((150, 300))
+                continue
+            if self.classifier(img) in playable:
                 return
-            self.device.key_back()  # fallback for panels without a bottom-center X
-            self._sleep((150, 300))
+            if self.close_check(img):
+                self.device.tap(*self._pt("close_button"))
+                _, ok = self._poll(
+                    lambda im: self.classifier(im) in playable,
+                    self._RECOVER_POLL_MS,
+                )
+                if ok:
+                    return
+            else:
+                self._sleep((300, 500))  # transient; wait, don't flee
 
     # --- throw loop (INV-1 lives here) ------------------------------------
     def _run_throw_loop(self):

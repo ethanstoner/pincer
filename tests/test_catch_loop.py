@@ -136,7 +136,7 @@ def test_caught_path_taps_once_labels_once_throws_and_no_flee_or_recover():
 
 def test_wrong_target_never_throws_and_recovers():
     # tap opened a non-encounter (e.g. a gym): in_encounter never confirmed ->
-    # encounter poll times out -> _recover taps the close X. SAFETY: no throw.
+    # _await_encounter bails -> _recover taps the close X. SAFETY: no throw.
     classifier = Scripted(
         [ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP]
     )
@@ -145,7 +145,7 @@ def test_wrong_target_never_throws_and_recovers():
     detector_fn = lambda img, phone: target
 
     loop, device, calls, _ = make_loop(
-        classifier, encounter_check, detector_fn=detector_fn
+        classifier, encounter_check, detector_fn=detector_fn, close_check=lambda img: True
     )
 
     loop.tick()
@@ -232,7 +232,7 @@ def test_stubborn_pokemon_hits_throw_cap_then_yields_without_fleeing():
 def test_recover_on_pokestop_then_map():
     classifier = Scripted([ScreenState.POKESTOP, ScreenState.POKESTOP, ScreenState.MAP])
     encounter_check = Scripted([False])
-    loop, device, calls, _ = make_loop(classifier, encounter_check)
+    loop, device, calls, _ = make_loop(classifier, encounter_check, close_check=lambda img: True)
 
     loop.tick()
 
@@ -244,13 +244,27 @@ def test_recover_on_pokestop_then_map():
 def test_recover_on_gym_then_map():
     classifier = Scripted([ScreenState.GYM, ScreenState.GYM, ScreenState.MAP])
     encounter_check = Scripted([False])
-    loop, device, calls, _ = make_loop(classifier, encounter_check)
+    loop, device, calls, _ = make_loop(classifier, encounter_check, close_check=lambda img: True)
 
     loop.tick()
 
     assert device.swipes == []
     assert loop._pt("close_button") in device.taps   # tapped the X, not just back
     assert calls["labels"] == []
+
+
+def test_recover_never_flees_an_encounter():
+    # If recovery lands on an ENCOUNTER (e.g. it finished loading late), it must
+    # NOT press back / close it -- that would flee a catch. It just yields.
+    classifier = Scripted([ScreenState.ENCOUNTER])
+    encounter_check = Scripted([True])
+    loop, device, _, _ = make_loop(classifier, encounter_check, close_check=lambda img: True)
+
+    loop._recover()
+
+    assert device.swipes == []
+    assert device.taps == []        # no close tap
+    assert device.key_backs == []   # no flee
 
 
 def test_recover_never_throws_on_unknown():
@@ -273,19 +287,19 @@ def test_recover_method_directly_never_swipes_for_all_non_encounter_states():
         assert device.swipes == []
 
 
-def test_recover_terminates_on_stuck_timeout_without_hanging_or_throwing():
-    # classifier NEVER returns MAP -> recover exhausts its attempts (tap close +
-    # key_back fallback each time) and RETURNS without hanging or throwing.
-    classifier = Scripted([ScreenState.UNKNOWN])   # sticky UNKNOWN forever
+def test_recover_terminates_on_stuck_panel_without_hanging_or_throwing():
+    # A gym panel whose classify NEVER becomes playable -> recover exhausts its
+    # attempts (tapping the X each time) and RETURNS without hanging or throwing.
+    classifier = Scripted([ScreenState.UNKNOWN])   # sticky non-playable forever
     encounter_check = Scripted([False])
-    loop, device, calls, _ = make_loop(classifier, encounter_check)
+    loop, device, calls, _ = make_loop(classifier, encounter_check, close_check=lambda img: True)
 
     loop.tick()  # UNKNOWN -> _recover; must TERMINATE (no hang)
 
-    assert device.swipes == []          # recover never throws, even on timeout
+    assert device.swipes == []          # recover never throws, even when stuck
     assert calls["labels"] == []
-    assert loop._pt("close_button") in device.taps  # tried the X
-    assert len(device.key_backs) >= 1               # and the back fallback
+    assert loop._pt("close_button") in device.taps  # kept trying the X
+    assert device.key_backs == []                   # never blindly pressed back
 
 
 def test_run_loop_calls_tick_until_stop_event_set():
