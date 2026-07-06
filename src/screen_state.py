@@ -122,9 +122,13 @@ def in_encounter(img: np.ndarray) -> bool:
 # out the whole encounter-load timeout. Measured close_x match scores:
 #   gym / pokestop screens : ~1.000 (button is pixel-identical across panels)
 #   map / encounter screens: <= 0.64
-# Threshold 0.82 sits in the gap (margin >= 0.18 either side).
-_CLOSE_THRESHOLD = 0.82
-_CLOSE_ANCHOR = ("close_x.png", 0.498, 0.9527, 68)  # (file, cx ratio, cy ratio, half px)
+# The template is a TIGHT crop of the X GLYPH ONLY (not the surrounding panel):
+# a wider crop drags in the panel background, which differs by theme (dark gym vs
+# light-purple PokeStop) and tanked the score on PokeStops (0.57 -> stuck). The
+# tight glyph matches on BOTH: measured PokeStop 1.00, gym 0.85, map/encounter
+# <= 0.39. Threshold 0.60 sits in the gap (margin >= 0.21 either side).
+_CLOSE_THRESHOLD = 0.60
+_CLOSE_ANCHOR = ("close_x.png", 0.498, 0.9527, 42)  # (file, cx ratio, cy ratio, half px)
 
 
 def _load_close_template():

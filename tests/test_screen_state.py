@@ -54,16 +54,20 @@ def test_encounter_anchor_score_margin():
 
 
 # --- has_close_button(): detects a mis-tapped gym / PokeStop / menu so the loop
-#     can bail instead of waiting out the encounter timeout. ---
-def test_has_close_button_true_on_gym():
-    assert has_close_button(_load("gym.png")) is True
+#     can bail instead of waiting out the encounter timeout. Must fire on BOTH
+#     gym (dark theme) and PokeStop (light theme) -- a gym-only template got stuck
+#     on PokeStops. ---
+@pytest.mark.parametrize("name", ["gym.png", "pokestop.png"])
+def test_has_close_button_true_on_closable_panels(name):
+    assert has_close_button(_load(name)) is True
 
 @pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"])
 def test_has_close_button_false_off_panel(name):
     assert has_close_button(_load(name)) is False
 
 def test_close_button_score_margin():
-    # gym scores ~1.0; map/encounter score well under the 0.82 threshold.
-    assert close_button_score(_load("gym.png")) >= 0.95
+    # both closable panels score well above threshold; map/encounter well below.
+    assert close_button_score(_load("pokestop.png")) >= 0.90
+    assert close_button_score(_load("gym.png")) >= 0.75
     for name in ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"]:
-        assert close_button_score(_load(name)) < 0.72
+        assert close_button_score(_load(name)) < 0.50
