@@ -86,6 +86,10 @@ class CatchLoop:
                                   # blurred (camera rotating) -> don't trust
                                   # detections, skip the tap this tick. Walking
                                   # pan measures ~150-190 px/s and stays OK.
+    _PAN_EMA_ALPHA = 0.5          # velocity smoothing: one noisy correlation
+                                  # (low-texture frame) must not shove the tap
+                                  # sideways (live: a tap missed wide)
+    _LEAD_MAX_PX = 110            # hard cap on how far a tap may be led
     _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
                                       # (1.2s misfiled slow day encounter loads as 'nothing')
 
@@ -126,6 +130,7 @@ class CatchLoop:
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
         self._last_target_t = None  # last time the detector found anything
         self._pan_speed = 0.0       # last measured scene pan speed (px/s)
+        self._pan_v = None          # smoothed (EMA) pan velocity, px/s
         # Streamed frames are fresher than pulled ones -> shorter tap lead.
         self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
@@ -252,7 +257,21 @@ class CatchLoop:
                     self._pan_speed = speed
                 if (response >= self._PAN_MIN_RESPONSE
                         and self._PAN_MIN_SPEED < speed < self._PAN_MAX_SPEED):
-                    lead = (vx * self._tap_lead_s, vy * self._tap_lead_s)
+                    # EMA-smooth the velocity: a single noisy correlation on a
+                    # low-texture frame must not shove the tap sideways.
+                    if self._pan_v is None:
+                        self._pan_v = (vx, vy)
+                    else:
+                        a = self._PAN_EMA_ALPHA
+                        self._pan_v = (a * vx + (1 - a) * self._pan_v[0],
+                                       a * vy + (1 - a) * self._pan_v[1])
+                    lx = self._pan_v[0] * self._tap_lead_s
+                    ly = self._pan_v[1] * self._tap_lead_s
+                    mag = math.hypot(lx, ly)
+                    if mag > self._LEAD_MAX_PX:  # hard cap on lead distance
+                        lx, ly = (lx * self._LEAD_MAX_PX / mag,
+                                  ly * self._LEAD_MAX_PX / mag)
+                    lead = (lx, ly)
         self._prev_pan = (small, now)
         return lead
 
@@ -271,6 +290,7 @@ class CatchLoop:
             int(self.rng.uniform(*self._CAMERA_PAN_MS)),
         )
         self._prev_pan = None
+        self._pan_v = None   # rotation changes the walk's screen direction
         self._fail_spots = []
         self._sleep(self._CAMERA_PAN_SETTLE_MS)
 

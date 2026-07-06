@@ -472,6 +472,19 @@ def test_pan_lead_points_in_the_direction_targets_move():
     assert 20 < ly < 70, ly
 
 
+def test_pan_lead_is_hard_capped():
+    # Even a fast (valid) pan must not lead the tap further than the cap --
+    # an overshot lead is how taps miss wide.
+    rng = np.random.default_rng(11)
+    base = (rng.random((2388, 1080)) * 255).astype(np.uint8)
+    f1 = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    f2 = cv2.cvtColor(np.roll(base, 150, axis=1), cv2.COLOR_GRAY2BGR)  # right 150
+    loop, _, _, _ = make_loop(Scripted([ScreenState.MAP]), Scripted([False]))
+    loop._pan_lead(f1, 20.0)
+    lx, ly = loop._pan_lead(f2, 20.5)          # v = 300 px/s -> raw lead 165
+    assert (lx ** 2 + ly ** 2) ** 0.5 <= loop._LEAD_MAX_PX + 0.1
+
+
 def test_pan_lead_zero_when_scene_is_static():
     rng = np.random.default_rng(9)
     base = (rng.random((2388, 1080)) * 255).astype(np.uint8)
