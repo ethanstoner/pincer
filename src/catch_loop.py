@@ -74,6 +74,14 @@ class CatchLoop:
                                   # real; the speed window bounds bad leads
     _RETHROW_GRACE_MS = 700       # post-throw window where encounter UI still
                                   # showing does NOT mean broke-free yet
+    # Camera pan: when the visible spawns are exhausted (no target for a few
+    # seconds), rotate the camera with a horizontal drag -- spawns hide behind
+    # gyms/towers and off-angle (Ethan's request). A drag never taps anything.
+    _CAMERA_PAN_AFTER_S = 3.0
+    _CAMERA_PAN_Y = 0.55          # drag height (mid-map, clear of all UI)
+    _CAMERA_PAN_X = (0.78, 0.22)  # right-to-left sweep rotates ~a third turn
+    _CAMERA_PAN_MS = (220, 300)
+    _CAMERA_PAN_SETTLE_MS = (250, 400)
     _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
                                       # (1.2s misfiled slow day encounter loads as 'nothing')
 
@@ -112,6 +120,7 @@ class CatchLoop:
         self.clock = clock
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
+        self._last_target_t = None  # last time the detector found anything
         # Streamed frames are fresher than pulled ones -> shorter tap lead.
         self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
@@ -239,6 +248,24 @@ class CatchLoop:
                     lead = (vx * self._tap_lead_s, vy * self._tap_lead_s)
         self._prev_pan = (small, now)
         return lead
+
+    def _camera_pan(self):
+        """Rotate the camera with a horizontal drag to reveal spawns hidden
+        behind gyms/towers or off-angle. A drag is never a tap (nothing can be
+        opened) and never a throw (INV-1 concerns only the throw gesture inside
+        the throw loop). Screen-space state is invalidated: the failed-tap
+        embargoes and the pan-correlation basis both refer to the old view."""
+        w, h = self.phone.width, self.phone.height
+        y = int(self._CAMERA_PAN_Y * h)
+        x1, x2 = int(self._CAMERA_PAN_X[0] * w), int(self._CAMERA_PAN_X[1] * w)
+        self.device.swipe(
+            self._jitter(x1, 12), self._jitter(y, 12),
+            self._jitter(x2, 12), self._jitter(y, 12),
+            int(self.rng.uniform(*self._CAMERA_PAN_MS)),
+        )
+        self._prev_pan = None
+        self._fail_spots = []
+        self._sleep(self._CAMERA_PAN_SETTLE_MS)
 
     def _bail_outcome(self, bail_img):
         """Name what a failed tap actually opened, for the click-audit trail:
@@ -400,8 +427,17 @@ class CatchLoop:
                 ):
                     target = None
             if target is None:
+                # Visible spawns exhausted? Rotate the camera to look around --
+                # spawns hide behind gyms/towers and outside the current angle.
+                if self._last_target_t is None:
+                    self._last_target_t = now
+                elif now - self._last_target_t >= self._CAMERA_PAN_AFTER_S:
+                    self._camera_pan()
+                    self._last_target_t = self.clock()
+                    return
                 self._sleep(self.config.timing["map_scan_ms"])
                 return
+            self._last_target_t = now
 
             self.device.tap(
                 self._jitter(target.x + int(lead_x), self._TAP_JITTER_PX),

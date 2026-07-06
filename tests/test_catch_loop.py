@@ -385,6 +385,27 @@ def test_propose_exclude_zone_yields_a_different_target():
         assert (abs(t2.x - t1.x) > 60) or (abs(t2.y - t1.y) > 60)
 
 
+def test_camera_pans_after_empty_scans_but_not_immediately():
+    # No target on the map: the FIRST ticks must not pan (spawns may just be
+    # loading); once the empty stretch exceeds the threshold, a horizontal
+    # camera drag fires and screen-space state resets.
+    classifier = Scripted([ScreenState.MAP])
+    loop, device, _, _ = make_loop(classifier, Scripted([False]),
+                                   detector_fn=lambda img, phone: None)
+    loop.tick()
+    assert device.swipes == []                       # too early to pan
+
+    loop._fail_spots = [(1, 2, 999.0)]
+    loop._last_target_t = -10.0                      # long-empty stretch
+    loop.tick()
+    assert len(device.swipes) == 1                   # camera drag fired
+    (x1, y1, x2, y2, ms) = device.swipes[0]
+    assert x1 > x2                                   # horizontal right-to-left
+    assert abs(y1 - y2) <= 24                        # ~level drag, not a throw
+    assert loop._fail_spots == []                    # screen-space state reset
+    assert device.taps == []                         # never tapped anything
+
+
 def test_broke_free_rethrows_when_encounter_ui_returns():
     # Ball fails -> the encounter UI (berry icon) reappears -> the next throw
     # must fire as soon as the grace period passes, NOT after the full resolve
