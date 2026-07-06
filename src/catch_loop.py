@@ -49,8 +49,11 @@ class CatchLoop:
     # embargoed so the detector picks the NEXT-best candidate instead of
     # re-tapping the same giant raid boss / walking buddy / inert icon every
     # tick (live audit showed 4+ consecutive taps on one Groudon raid boss).
-    _FAIL_SPOT_TTL_S = 8.0
-    _FAIL_SPOT_RADIUS = 130
+    # 20s/170px (was 8s/130px): giant raid bosses (Gigantamax Necrozma etc.)
+    # offer many distinct tappable fragments across a wide body, so short/small
+    # embargoes still allowed ~2.5 panel taps per minute near one.
+    _FAIL_SPOT_TTL_S = 20.0
+    _FAIL_SPOT_RADIUS = 170
     _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
 
     def __init__(
