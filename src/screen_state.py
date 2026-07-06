@@ -53,10 +53,15 @@ class ScreenState(Enum):
 _MATCH_THRESHOLD = 0.60
 _SEARCH_TOL = 45  # px slack around each anchor's home box, absorbs alignment jitter
 
-# (template filename, center-x ratio, center-y ratio, half-size px used at crop time)
+# Each anchor is a LIST of template variants (score = max over variants): the
+# encounter buttons are translucent, so a bright DAYLIGHT AR background washes
+# them out vs the night-cropped originals (live: ball-select scored 0.49-0.55
+# on a real day encounter -> both phones froze staring at a catchable
+# Sewaddle). *_day.png variants were cropped from that frame.
+# (variant filenames, center-x ratio, center-y ratio, half-size px)
 _ANCHORS = [
-    ("enc_berry.png", 0.12, 0.90, 70),
-    ("enc_ballselect.png", 0.87, 0.90, 70),
+    (("enc_berry.png", "enc_berry_day.png"), 0.12, 0.90, 70),
+    (("enc_ballselect.png", "enc_ballselect_day.png"), 0.87, 0.90, 70),
 ]
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
@@ -64,12 +69,15 @@ _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templa
 
 def _load_templates():
     loaded = []
-    for fname, cxr, cyr, half in _ANCHORS:
-        path = os.path.join(_TEMPLATE_DIR, fname)
-        templ = cv2.imread(path)
-        if templ is None:
-            raise FileNotFoundError(f"ENCOUNTER anchor template missing: {path}")
-        loaded.append((templ, cxr, cyr, half))
+    for fnames, cxr, cyr, half in _ANCHORS:
+        variants = []
+        for fname in fnames:
+            path = os.path.join(_TEMPLATE_DIR, fname)
+            templ = cv2.imread(path)
+            if templ is None:
+                raise FileNotFoundError(f"ENCOUNTER anchor template missing: {path}")
+            variants.append(templ)
+        loaded.append((variants, cxr, cyr, half))
     return loaded
 
 
@@ -108,8 +116,12 @@ def _anchor_score(img, templ, cxr, cyr, half):
 
 
 def encounter_scores(img: np.ndarray) -> list:
-    """Return the match score for each ENCOUNTER anchor (exposed for tests/debug)."""
-    return [_anchor_score(img, t, cxr, cyr, half) for t, cxr, cyr, half in _TEMPLATES]
+    """Per-anchor match score, max over that anchor's day/night template
+    variants (exposed for tests/debug)."""
+    return [
+        max(_anchor_score(img, t, cxr, cyr, half) for t in variants)
+        for variants, cxr, cyr, half in _TEMPLATES
+    ]
 
 
 def in_encounter(img: np.ndarray) -> bool:
