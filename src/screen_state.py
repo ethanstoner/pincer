@@ -83,8 +83,14 @@ _TEMPLATES = _load_templates()
 #   map_after:     105.80  129.98  107.02  135.53
 # Encounter backgrounds vary, so this is NOT used for encounter — only to
 # positively confirm MAP. Anything failing both ENCOUNTER and MAP -> UNKNOWN.
+# The SAT range needs BOTH bounds: measured map mean sat is ~127-136, but the
+# WHITE encounter-loading flash has sat ~0-25 with an arbitrary hue mean that
+# can land inside the hue window — with no lower bound it classified as MAP,
+# so _await_encounter bailed out of real encounters mid-load ("nothing" audit
+# entries whose result frame is white), wasting a recover+rescan per catch.
 _MAP_HUE_MIN = 98
 _MAP_HUE_MAX = 120
+_MAP_SAT_MIN = 60
 _MAP_SAT_MAX = 160
 
 
@@ -223,8 +229,8 @@ def classify(img: np.ndarray) -> ScreenState:
     full_h, full_s, _ = _region_hsv_mean(img, 0.0, 1.0, 0.0, 1.0)
     mid_h, mid_s, _ = _region_hsv_mean(img, 0.35, 0.65, 0.2, 0.8)
     is_map = (
-        _MAP_HUE_MIN < full_h < _MAP_HUE_MAX and full_s < _MAP_SAT_MAX
-        and _MAP_HUE_MIN < mid_h < _MAP_HUE_MAX and mid_s < _MAP_SAT_MAX
+        _MAP_HUE_MIN < full_h < _MAP_HUE_MAX and _MAP_SAT_MIN < full_s < _MAP_SAT_MAX
+        and _MAP_HUE_MIN < mid_h < _MAP_HUE_MAX and _MAP_SAT_MIN < mid_s < _MAP_SAT_MAX
     )
     if is_map:
         return ScreenState.MAP

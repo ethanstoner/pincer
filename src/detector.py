@@ -216,7 +216,17 @@ def is_gym_photodisc(crop: np.ndarray) -> bool:
 
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-_PINK_BADGE_TEMPLATE = cv2.imread(os.path.join(_TEMPLATE_DIR, "badge_pink.png"))
+# The map camera tilts, so the badge renders at different perspectives; one
+# template per observed tilt (same multi-template pattern as the close-X).
+# badge_pink2.png was cropped from a live mis-click audit frame (tilted view;
+# the flat template scored only ~0.6 there). Measured per-template max over
+# all confirmed-catch Pokemon boxes: 0.65 / 0.59 -- threshold 0.80 is safe.
+_PINK_BADGE_TEMPLATES = [
+    t for t in (
+        cv2.imread(os.path.join(_TEMPLATE_DIR, "badge_pink.png")),
+        cv2.imread(os.path.join(_TEMPLATE_DIR, "badge_pink2.png")),
+    ) if t is not None
+]
 
 
 def _largest_white_fill(crop: np.ndarray) -> float:
@@ -249,24 +259,25 @@ def is_pink_badge(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
     the badge template matches near the candidate AND the candidate's centre
     falls inside the matched badge rectangle (a Pokemon merely standing next
     to a badge keeps its tap)."""
-    if _PINK_BADGE_TEMPLATE is None:
-        return False
     H, W = img.shape[:2]
-    th, tw = _PINK_BADGE_TEMPLATE.shape[:2]
     cx, cy = x + w // 2, y + h // 2
-    y0 = max(0, cy - th // 2 - PINK_BADGE_SEARCH_TOL)
-    y1 = min(H, cy + th // 2 + PINK_BADGE_SEARCH_TOL)
-    x0 = max(0, cx - tw // 2 - PINK_BADGE_SEARCH_TOL)
-    x1 = min(W, cx + tw // 2 + PINK_BADGE_SEARCH_TOL)
-    region = img[y0:y1, x0:x1]
-    if region.shape[0] < th or region.shape[1] < tw:
-        return False
-    res = cv2.matchTemplate(region, _PINK_BADGE_TEMPLATE, cv2.TM_CCOEFF_NORMED)
-    _, score, _, loc = cv2.minMaxLoc(res)
-    if score < PINK_BADGE_SCORE_MIN:
-        return False
-    mx, my = x0 + loc[0], y0 + loc[1]  # matched badge rect top-left in frame coords
-    return mx <= cx <= mx + tw and my <= cy <= my + th
+    for templ in _PINK_BADGE_TEMPLATES:
+        th, tw = templ.shape[:2]
+        y0 = max(0, cy - th // 2 - PINK_BADGE_SEARCH_TOL)
+        y1 = min(H, cy + th // 2 + PINK_BADGE_SEARCH_TOL)
+        x0 = max(0, cx - tw // 2 - PINK_BADGE_SEARCH_TOL)
+        x1 = min(W, cx + tw // 2 + PINK_BADGE_SEARCH_TOL)
+        region = img[y0:y1, x0:x1]
+        if region.shape[0] < th or region.shape[1] < tw:
+            continue
+        res = cv2.matchTemplate(region, templ, cv2.TM_CCOEFF_NORMED)
+        _, score, _, loc = cv2.minMaxLoc(res)
+        if score < PINK_BADGE_SCORE_MIN:
+            continue
+        mx, my = x0 + loc[0], y0 + loc[1]  # matched badge rect top-left, frame coords
+        if mx <= cx <= mx + tw and my <= cy <= my + th:
+            return True
+    return False
 
 
 def is_flat_badge(crop: np.ndarray) -> bool:

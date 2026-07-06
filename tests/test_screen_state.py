@@ -50,6 +50,17 @@ def test_solid_black_classifies_as_unknown():
 def test_solid_gray_classifies_as_unknown():
     assert classify(np.full((2388, 1080, 3), 128, np.uint8)) == ScreenState.UNKNOWN
 
+def test_white_loading_flash_is_not_map():
+    # The white encounter-loading flash has near-zero saturation but its hue
+    # MEAN is arbitrary and landed inside the map hue window -> classified MAP
+    # -> _await_encounter bailed out of REAL loading encounters (live audit
+    # frames nothing/5+18: clean Pokemon taps whose result frame was white).
+    # A near-white frame (slight blue tint puts hue in the map band) must be
+    # UNKNOWN so the encounter poll keeps waiting.
+    img = np.full((2388, 1080, 3), 245, np.uint8)
+    img[:, :, 0] = 252  # faint blue cast -> hue lands ~map band, sat stays tiny
+    assert classify(img) == ScreenState.UNKNOWN
+
 # --- Assert the anchor-score margin directly (proves it is not on the edge) ---
 def test_encounter_anchor_score_margin():
     # Both encounter backgrounds score well above threshold on ALL anchors...
