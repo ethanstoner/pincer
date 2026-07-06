@@ -173,6 +173,44 @@ def test_propose_avoids_gym_and_badges_on_live_gym_dense_frame():
             assert not _inside(t.x, t.y, box), f"{fname}: picked excluded box {box}"
 
 
+def test_max_badge_rejects_orange_badge_keeps_orange_pokemon():
+    """Orange Max-battle/raid badge = orange disc + big white face glyph.
+    Orange Pokemon (Hisuian Voltorb) have no large white component -> kept."""
+    from src.detector import is_max_badge
+
+    # synth badge: orange disc with a big compact white glyph in the middle
+    badge = np.zeros((100, 100, 3), np.uint8)
+    cv2.circle(badge, (50, 50), 48, (30, 100, 235), -1)   # orange (BGR)
+    cv2.circle(badge, (50, 50), 20, (255, 255, 255), -1)  # white glyph
+    assert is_max_badge(badge) is True
+
+    v = cv2.imread("tests/fixtures/map_voltorb_tower.png")
+    assert is_max_badge(_crop(v, (608, 1520, 82, 79))) is False  # orange Voltorb
+
+
+def test_pink_badge_template_rejects_badge_not_neighbours():
+    """The pink elite-raid badge is template-matched AT the candidate location:
+    the badge box and a partial slice of it are rejected; a Pokemon box merely
+    near a badge keeps its tap (its centre is outside the matched rect)."""
+    from src.detector import is_pink_badge
+    g = cv2.imread("tests/fixtures/map_gym_badges.png")
+    assert is_pink_badge(g, 904, 1435, 96, 104) is True   # the badge itself
+    assert is_pink_badge(g, 904, 1490, 96, 44) is True    # partial bottom slice
+    assert is_pink_badge(g, 350, 1775, 103, 124) is False  # green Pokemon far away
+
+
+def test_clear_click_audit_removes_only_clicks(tmp_path):
+    from src.runner import clear_click_audit
+    d = tmp_path / "dataset"
+    (d / "clicks" / "panel").mkdir(parents=True)
+    (d / "clicks" / "panel" / "click_000000.png").write_bytes(b"x")
+    (d / "images").mkdir()
+    (d / "images" / "pokemon_000000.png").write_bytes(b"x")
+    clear_click_audit(str(d))
+    assert not (d / "clicks").exists()                     # audit wiped
+    assert (d / "images" / "pokemon_000000.png").exists()  # training data kept
+
+
 def test_propose_on_live_radar_scenes():
     """Dense live scenes (heavy VFX overlays) must still yield a real Pokemon,
     inside the central region and never a gym/stop photodisc."""

@@ -145,6 +145,33 @@ PHOTODISC_ASPECT_MAX = 2.80  # ...and be compact (min-area-rect long/short <= th
 GYM_CONTEXT_HEIGHT_MULT = 2.5
 GYM_CONTEXT_PAD_DIV = 4
 
+# --- Max-battle / raid ORANGE badge rejector (color + white-glyph structure) ---
+# Power spots & raids hang an ORANGE disc badge with a big WHITE monster-face
+# glyph over the map ("N players" pill below). It kept surviving the purity
+# check because pink VFX petals inside the bbox dilute hue purity. Structure
+# separates cleanly (measured on 10 live badge mis-click crops vs all
+# ground-truth Pokemon): badge orange-fraction 0.49-0.60 with largest-white
+# fill 0.071-0.213; ORANGE Pokemon (Growlithe-likes, Hisuian Voltorb) have
+# orange up to 0.74 but largest-white fill <= 0.029 (no big white glyph).
+ORANGE_HUE = (5, 22)
+ORANGE_SAT_MIN = 150
+MAX_BADGE_ORANGE_MIN = 0.35
+MAX_BADGE_WHITE_FILL_MIN = 0.05
+
+# --- Pink ELITE-raid badge rejector (template at the candidate's location) ---
+# The pink "elite raid" disc badge partially-boxed escapes every color rule
+# (partial boxes mix background), and a white-glyph rule would false-reject a
+# real pink Pokemon (measured wfill 0.069 vs badge 0.042-0.051 -- overlaps).
+# Template matching is exact: badge_pink.png (cropped from the live fixture),
+# searched in a +/-45 px window around the candidate centre. IMPORTANT: a high
+# score alone is NOT enough -- a Pokemon STANDING NEXT TO a badge also gets a
+# window hit (measured 0.89 on a real Pokemon box). Reject only when the
+# candidate's CENTRE lies inside the matched badge rectangle: measured badge
+# and badge-slice candidates 1.00 (centre inside), neighbouring-Pokemon boxes
+# keep their tap because their centre is outside the matched rect.
+PINK_BADGE_SCORE_MIN = 0.80
+PINK_BADGE_SEARCH_TOL = 45
+
 # --- Flat-UI badge rejector (raid badge / elite-raid badge / timer pill) ---
 # Raid eggs+bosses hang an ORANGE badge and elite raids a PINK "233 days"
 # badge/timer pill on the map; all are FLAT single-hue UI discs/pills, while a
@@ -186,6 +213,60 @@ def is_gym_photodisc(crop: np.ndarray) -> bool:
     (_, _), (rw, rh), _ = cv2.minAreaRect(contour)
     aspect = max(rw, rh) / max(1.0, min(rw, rh))
     return aspect <= PHOTODISC_ASPECT_MAX  # large AND compact -> reject
+
+
+_TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+_PINK_BADGE_TEMPLATE = cv2.imread(os.path.join(_TEMPLATE_DIR, "badge_pink.png"))
+
+
+def _largest_white_fill(crop: np.ndarray) -> float:
+    """Area fraction of the largest bright-desaturated connected component."""
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    white = ((hsv[:, :, 2] > WHITE_V_MIN) & (hsv[:, :, 1] < WHITE_S_MAX)).astype(np.uint8)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(white, connectivity=8)
+    if n <= 1:
+        return 0.0
+    h, w = crop.shape[:2]
+    return float(stats[1:, cv2.CC_STAT_AREA].max()) / float(w * h)
+
+
+def is_max_badge(crop: np.ndarray) -> bool:
+    """True if a candidate crop is the orange Max-battle / raid badge: a large
+    orange fraction PLUS a big compact white glyph (the monster face). Orange
+    Pokemon pass because they have no large white component (<= 0.029 measured
+    vs badge >= 0.071)."""
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+    orange = float(((hue >= ORANGE_HUE[0]) & (hue <= ORANGE_HUE[1])
+                    & (sat > ORANGE_SAT_MIN)).mean())
+    if orange < MAX_BADGE_ORANGE_MIN:
+        return False
+    return _largest_white_fill(crop) >= MAX_BADGE_WHITE_FILL_MIN
+
+
+def is_pink_badge(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
+    """True if the candidate at bbox (x,y,w,h) IS the pink elite-raid badge:
+    the badge template matches near the candidate AND the candidate's centre
+    falls inside the matched badge rectangle (a Pokemon merely standing next
+    to a badge keeps its tap)."""
+    if _PINK_BADGE_TEMPLATE is None:
+        return False
+    H, W = img.shape[:2]
+    th, tw = _PINK_BADGE_TEMPLATE.shape[:2]
+    cx, cy = x + w // 2, y + h // 2
+    y0 = max(0, cy - th // 2 - PINK_BADGE_SEARCH_TOL)
+    y1 = min(H, cy + th // 2 + PINK_BADGE_SEARCH_TOL)
+    x0 = max(0, cx - tw // 2 - PINK_BADGE_SEARCH_TOL)
+    x1 = min(W, cx + tw // 2 + PINK_BADGE_SEARCH_TOL)
+    region = img[y0:y1, x0:x1]
+    if region.shape[0] < th or region.shape[1] < tw:
+        return False
+    res = cv2.matchTemplate(region, _PINK_BADGE_TEMPLATE, cv2.TM_CCOEFF_NORMED)
+    _, score, _, loc = cv2.minMaxLoc(res)
+    if score < PINK_BADGE_SCORE_MIN:
+        return False
+    mx, my = x0 + loc[0], y0 + loc[1]  # matched badge rect top-left in frame coords
+    return mx <= cx <= mx + tw and my <= cy <= my + th
 
 
 def is_flat_badge(crop: np.ndarray) -> bool:
@@ -273,6 +354,13 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
         if is_gym_photodisc(img[y : y + h, x : x + w]):
             continue
 
+        # A striped power-spot / gym tower whose disc straddles the bbox edge
+        # can dodge the tight-bbox test: re-run it 25% expanded. Measured: 0/26
+        # ground-truth Pokemon flagged; VFX-ring Pokemon (radar0/1) stay kept.
+        ph, pw = int(h * 0.25), int(w * 0.25)
+        if is_gym_photodisc(img[max(0, y - ph) : y + h + ph, max(0, x - pw) : x + w + pw]):
+            continue
+
         # Reject anything standing ON a gym (tower-top fragments, defenders):
         # same disc test on the context BELOW the bbox.
         if has_gym_below(img, x, y, w, h):
@@ -280,6 +368,14 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
 
         # Reject flat single-hue UI badges (raid / elite-raid / timer pills).
         if is_flat_badge(img[y : y + h, x : x + w]):
+            continue
+
+        # Reject the orange Max-battle/raid badge (orange disc + white face).
+        if is_max_badge(img[y : y + h, x : x + w]):
+            continue
+
+        # Reject the pink elite-raid badge (template match at this location).
+        if is_pink_badge(img, x, y, w, h):
             continue
 
         cx = x + w / 2.0
@@ -352,19 +448,23 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
 _CLICK_PAD = 100
 
 
-def save_click_debug(img: np.ndarray, target: Target, outcome: str, dataset_dir: str) -> str:
+def save_click_debug(img: np.ndarray, target: Target, outcome: str, dataset_dir: str,
+                     result_img: np.ndarray = None) -> str:
     """Audit trail of EVERY tap the bot attempts: a padded crop of the map frame
-    around the proposed target, with the detector's bbox drawn in red, filed by
-    what the tap turned out to open:
+    around the proposed target (detector bbox in red) and, when available, the
+    RESULTING screen pasted alongside -- so each image reads "clicked this ->
+    got this" (a PokeStop panel, a gym, a Rocket grunt, an encounter, ...).
+    Filed by outcome:
 
         <dataset>/clicks/encounter/  tap opened an encounter (real Pokemon - correct)
         <dataset>/clicks/panel/      tap opened a closable panel (gym / stop /
-                                     Rocket / Route ... - a WRONG click)
-        <dataset>/clicks/nothing/    still on the map afterwards (empty scenery)
+                                     power spot / Rocket / Route - a WRONG click)
+        <dataset>/clicks/nothing/    still on the map afterwards (empty scenery
+                                     or an inert icon)
         <dataset>/clicks/timeout/    screen never resolved within the timeout
 
-    Review the panel/ and nothing/ folders to see exactly which map objects the
-    detector keeps mistaking for Pokemon, then tune/train against them.
+    The clicks/ tree is CLEARED at every runner start (see runner.py) so each
+    run's folder holds exactly that run's taps for review.
     """
     h, w = img.shape[:2]
     bx, by, bw, bh = target.bbox
@@ -372,6 +472,12 @@ def save_click_debug(img: np.ndarray, target: Target, outcome: str, dataset_dir:
     x1, y1 = min(w, bx + bw + _CLICK_PAD), min(h, by + bh + _CLICK_PAD)
     crop = img[y0:y1, x0:x1].copy()
     cv2.rectangle(crop, (bx - x0, by - y0), (bx - x0 + bw, by - y0 + bh), (0, 0, 255), 3)
+
+    if result_img is not None:
+        ch = crop.shape[0]
+        rw = max(1, int(result_img.shape[1] * ch / result_img.shape[0]))
+        result_small = cv2.resize(result_img, (rw, ch))
+        crop = np.hstack([crop, np.full((ch, 6, 3), 255, np.uint8), result_small])
 
     out_dir = os.path.join(dataset_dir, "clicks", outcome)
     with _LABEL_LOCK:  # atomic index+write so 2 phones can't collide

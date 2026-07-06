@@ -282,8 +282,10 @@ class CatchLoop:
             enc_img, bail_img = self._await_encounter(self._timeout("encounter_load_ms"))
             if enc_img is None:
                 # Tap did not open an encounter -> back out on the frame we
-                # already have (no extra screencap). INV-1: no throw.
-                self.click_logger(img, target, self._bail_outcome(bail_img), self.config.dataset_dir)
+                # already have (no extra screencap). INV-1: no throw. The audit
+                # gets the RESULT frame too: "clicked this -> got this panel".
+                self.click_logger(img, target, self._bail_outcome(bail_img),
+                                  self.config.dataset_dir, result_img=bail_img)
                 self._recover(img=bail_img)
                 return
 
@@ -291,7 +293,8 @@ class CatchLoop:
             # write never delays the ball.
             self._run_throw_loop(first_frame=enc_img)
             self.labeler(img, target, self.config.dataset_dir)
-            self.click_logger(img, target, "encounter", self.config.dataset_dir)
+            self.click_logger(img, target, "encounter", self.config.dataset_dir,
+                              result_img=enc_img)
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter

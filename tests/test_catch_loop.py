@@ -89,7 +89,7 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
         calls["labels"].append((img, target, dataset_dir))
         return "labeled.png"
 
-    def click_logger(img, target, outcome, dataset_dir):
+    def click_logger(img, target, outcome, dataset_dir, result_img=None):
         calls["clicks"].append((target, outcome))
         return "click.png"
 

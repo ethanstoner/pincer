@@ -10,6 +10,8 @@ swipes, and back-presses are only logged, never sent to the phone.
 """
 
 import argparse
+import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -72,6 +74,14 @@ def _connected_serials(adb_path):
     return connected
 
 
+def clear_click_audit(dataset_dir):
+    """Start every run with an empty <dataset>/clicks/ tree so the folder holds
+    exactly THIS run's taps for review (Ethan critiques each run's mis-clicks).
+    Training data (images/ + labels/) is never touched -- it accumulates."""
+    clicks = os.path.join(dataset_dir, "clicks")
+    shutil.rmtree(clicks, ignore_errors=True)
+
+
 def _make_detector_fn(config):
     """Return the detector callable (img, phone) -> Optional[Target]. Defaults to
     the classical CV detector; uses the trained YOLO model when config selects it.
@@ -114,6 +124,7 @@ def main(argv):
             return
         print("running phones: " + ", ".join(p.serial for p in phones))
 
+    clear_click_audit(config.dataset_dir)  # fresh per-run click review folder
     loops = _build_loops(config, phones, args.dry_run)
 
     if args.once:

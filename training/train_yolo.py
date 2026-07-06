@@ -28,25 +28,32 @@ yaml_path = os.path.join(HERE, "_dataset.yaml")
 with open(yaml_path, "w") as f:
     yaml.safe_dump(cfg, f)
 
-model = YOLO(MODEL)  # COCO-pretrained backbone -> fast fine-tune
-model.train(
-    data=yaml_path,
-    epochs=EPOCHS,
-    imgsz=1280,          # tall phone frames -> keep sprites ~40-60px after resize
-    batch=8,
-    device=0,
-    project=os.path.join(HERE, "runs"),
-    name="pokemon",
-    exist_ok=True,
-    patience=40,
-    degrees=0, shear=0, perspective=0,   # UI is axis-aligned; don't warp it
-    mosaic=1.0, fliplr=0.5, hsv_h=0.02, hsv_s=0.5, hsv_v=0.4,  # color/lighting variety
-)
+def main():
+    model = YOLO(MODEL)  # COCO-pretrained backbone -> fast fine-tune
+    model.train(
+        data=yaml_path,
+        epochs=EPOCHS,
+        imgsz=1280,          # tall phone frames -> keep sprites ~40-60px after resize
+        batch=8,
+        device=0,
+        workers=0,           # Windows: spawned dataloader workers re-import this
+                             # module; workers=0 avoids the freeze_support crash
+        project=os.path.join(HERE, "runs"),
+        name="pokemon",
+        exist_ok=True,
+        patience=40,
+        degrees=0, shear=0, perspective=0,   # UI is axis-aligned; don't warp it
+        mosaic=1.0, fliplr=0.5, hsv_h=0.02, hsv_s=0.5, hsv_v=0.4,  # color/lighting variety
+    )
 
-best = os.path.join(HERE, "runs", "pokemon", "weights", "best.pt")
-print("best model:", best)
-try:
-    YOLO(best).export(format="onnx", imgsz=1280, dynamic=False, simplify=True)
-    print("exported ONNX next to best.pt")
-except Exception as e:
-    print("ONNX export skipped:", e)
+    best = os.path.join(HERE, "runs", "pokemon", "weights", "best.pt")
+    print("best model:", best)
+    try:
+        YOLO(best).export(format="onnx", imgsz=1280, dynamic=False, simplify=True)
+        print("exported ONNX next to best.pt")
+    except Exception as e:
+        print("ONNX export skipped:", e)
+
+
+if __name__ == "__main__":
+    main()
