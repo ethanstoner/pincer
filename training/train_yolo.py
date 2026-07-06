@@ -1,7 +1,10 @@
-"""Fine-tune YOLO11-nano to detect wild Pokemon on the game map.
+"""Fine-tune a YOLO11 model to detect wild Pokemon on the game map.
 
 Run with the experiments venv (has ultralytics + CUDA):
-    experiments/locate/venv/Scripts/python.exe training/train_yolo.py [epochs]
+    experiments/locate/venv/Scripts/python.exe training/train_yolo.py [epochs] [model]
+
+model defaults to yolo11s.pt ("small": noticeably better than nano on our tiny
+dataset, still ~10ms on the 4090 -- screencap at ~600ms dominates either way).
 
 Data: training/yolo_data/{images,labels}/{train,val} (build it with
 prepare_split.py). Phone frames are tall (1080x2388), so we train at a large
@@ -18,13 +21,14 @@ from ultralytics import YOLO
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "yolo_data")
 EPOCHS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
+MODEL = sys.argv[2] if len(sys.argv) > 2 else "yolo11s.pt"
 
 cfg = {"path": DATA, "train": "images/train", "val": "images/val", "names": {0: "pokemon"}}
 yaml_path = os.path.join(HERE, "_dataset.yaml")
 with open(yaml_path, "w") as f:
     yaml.safe_dump(cfg, f)
 
-model = YOLO("yolo11n.pt")  # nano; COCO-pretrained backbone -> fast fine-tune
+model = YOLO(MODEL)  # COCO-pretrained backbone -> fast fine-tune
 model.train(
     data=yaml_path,
     epochs=EPOCHS,

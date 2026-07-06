@@ -112,6 +112,67 @@ def test_photodisc_helper_rejects_gym_keeps_pokemon_under_vfx():
     assert is_gym_photodisc(_crop(r1, (615, 1495, 71, 63))) is False
 
 
+def test_flat_badge_rejects_ui_badges_keeps_pokemon():
+    """Locks the live gym/raid mis-click fix: flat single-hue UI badges (elite
+    raid badge, countdown pill, spin-arrow, tower fragment) must be rejected;
+    shaded 3D Pokemon (incl. the flat-ISH orange Hisuian Voltorb) must be kept.
+    Boxes are ground-truthed live-frame crops (dataset/clicks review)."""
+    from src.detector import is_flat_badge
+    g = cv2.imread("tests/fixtures/map_gym_badges.png")
+    v = cv2.imread("tests/fixtures/map_voltorb_tower.png")
+
+    # flat UI elements -> reject
+    assert is_flat_badge(_crop(g, (904, 1435, 96, 104))) is True   # pink "233 days" elite badge
+    assert is_flat_badge(_crop(g, (791, 1352, 39, 57))) is True    # orange tower fragment
+    assert is_flat_badge(_crop(v, (108, 990, 58, 50))) is True     # pink countdown pill
+
+    # real Pokemon -> keep
+    assert is_flat_badge(_crop(g, (350, 1775, 103, 124))) is False  # green Pokemon
+    assert is_flat_badge(_crop(v, (608, 1520, 82, 79))) is False    # orange Hisuian Voltorb
+
+
+def test_gym_below_rejects_tower_toppers_keeps_ground_pokemon():
+    """Candidates standing ON a gym tower (defenders / tower-top fragments)
+    have the gym's white disc system below the bbox -> rejected by context.
+    Wild Pokemon stand on plain map ground -> kept."""
+    from src.detector import has_gym_below
+    g = cv2.imread("tests/fixtures/map_gym_badges.png")
+    v = cv2.imread("tests/fixtures/map_voltorb_tower.png")
+
+    assert has_gym_below(v, 770, 1081, 113, 99) is True   # defender on tower top
+    assert has_gym_below(g, 791, 1352, 39, 57) is True    # tower-top fragment
+
+    assert has_gym_below(g, 350, 1775, 103, 124) is False  # green Pokemon on ground
+    assert has_gym_below(v, 608, 1520, 82, 79) is False    # Voltorb on ground
+
+
+def test_propose_avoids_gym_and_badges_on_live_gym_dense_frame():
+    """End-to-end on the live gym-dense frame that produced the wasted-tap
+    streak: whatever propose() picks, it must not be a badge, a timer pill, or
+    anything on a gym tower."""
+    cfg = load_config("config.json")
+    phone = cfg.phones[0]
+    bad_boxes = {
+        "map_gym_badges.png": [
+            (904, 1435, 96, 104),   # pink elite badge
+            (791, 1352, 39, 57),    # orange tower fragment
+            (858, 890, 180, 260),   # right gym tower + defender
+            (600, 530, 260, 400),   # upper gym towers
+        ],
+        "map_voltorb_tower.png": [
+            (108, 990, 58, 50),     # pink countdown pill
+            (770, 1081, 113, 99),   # defender on tower
+        ],
+    }
+    for fname, boxes in bad_boxes.items():
+        img = cv2.imread(f"tests/fixtures/{fname}")
+        t = propose(img, phone)
+        if t is None:
+            continue  # no proposal at all is acceptable (never a bad tap)
+        for box in boxes:
+            assert not _inside(t.x, t.y, box), f"{fname}: picked excluded box {box}"
+
+
 def test_propose_on_live_radar_scenes():
     """Dense live scenes (heavy VFX overlays) must still yield a real Pokemon,
     inside the central region and never a gym/stop photodisc."""

@@ -131,6 +131,34 @@ WHITE_S_MAX = 60
 PHOTODISC_FILL_MIN = 0.22    # largest white component must cover >= this share of bbox
 PHOTODISC_ASPECT_MAX = 2.80  # ...and be compact (min-area-rect long/short <= this)
 
+# --- Gym CONTEXT check: the disc is BELOW the tapped blob, not inside it ---
+# Live click-audit review (dataset/clicks) showed most wasted taps were gym
+# paraphernalia whose own bbox contains no white disc: red/orange tower-top
+# fragments and defender Pokemon standing ON towers. The gym's white
+# photodisc/ribbon system sits DIRECTLY BELOW them, outside the candidate bbox.
+# So each candidate is ALSO checked with the same structural photodisc test on
+# a context crop extended DOWNWARD 2.5x the bbox height (padded w/4 sideways).
+# Measured: flags live defender-on-tower (113x99) and tower-top fragment
+# (39x57) boxes; flags 0/25 ground-truth Pokemon boxes (23 confirmed-catch
+# labels + 2 live-frame Pokemon) -- a Pokemon stands on plain map ground, never
+# on a white disc.
+GYM_CONTEXT_HEIGHT_MULT = 2.5
+GYM_CONTEXT_PAD_DIV = 4
+
+# --- Flat-UI badge rejector (raid badge / elite-raid badge / timer pill) ---
+# Raid eggs+bosses hang an ORANGE badge and elite raids a PINK "233 days"
+# badge/timer pill on the map; all are FLAT single-hue UI discs/pills, while a
+# Pokemon is a shaded 3D model with hue variation. Measured hue purity (share
+# of colored [sat>120] pixels within +/-8 of the mode hue), on ground truth:
+#   25 real Pokemon (23 confirmed-catch boxes + green + orange Voltorb): <= 0.88
+#   flat UI badges (pink elite badge 0.93/0.94, pink timer pill 0.97, orange
+#   tower frag 1.00, yellow spin-arrow 0.91): >= 0.91
+# Threshold 0.90 splits the measured gap. Requires >= 30 colored pixels.
+BADGE_HUE_PURITY_MIN = 0.90
+BADGE_HUE_TOL = 8
+BADGE_MIN_COLORED_PX = 30
+BADGE_SAT_MIN = 120
+
 
 def is_gym_photodisc(crop: np.ndarray) -> bool:
     """True if a candidate crop (BGR) is a gym/PokeStop photodisc that must be
@@ -158,6 +186,33 @@ def is_gym_photodisc(crop: np.ndarray) -> bool:
     (_, _), (rw, rh), _ = cv2.minAreaRect(contour)
     aspect = max(rw, rh) / max(1.0, min(rw, rh))
     return aspect <= PHOTODISC_ASPECT_MAX  # large AND compact -> reject
+
+
+def is_flat_badge(crop: np.ndarray) -> bool:
+    """True if a candidate crop (BGR) is a flat single-hue UI element -- a raid
+    badge, elite-raid badge, countdown pill, or spin-arrow -- that must be
+    rejected. A Pokemon is a shaded 3D model: its colored pixels spread across
+    hues; a UI badge is one flat tint (measured gap: Pokemon <= 0.88 purity,
+    badges >= 0.91; threshold 0.90)."""
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0][hsv[:, :, 1] > BADGE_SAT_MIN].astype(int)
+    if hue.size < BADGE_MIN_COLORED_PX:
+        return False
+    mode = int(np.bincount(hue, minlength=180).argmax())
+    circ_dist = np.minimum(np.abs(hue - mode), 180 - np.abs(hue - mode))
+    return float((circ_dist <= BADGE_HUE_TOL).mean()) >= BADGE_HUE_PURITY_MIN
+
+
+def has_gym_below(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
+    """True if the candidate at bbox (x,y,w,h) sits ON TOP of a gym: the same
+    structural photodisc test, but run on a context crop extended DOWNWARD --
+    tower-top fragments and defender Pokemon have the gym's white disc/ribbon
+    system directly below their own bbox, real wild Pokemon have map ground."""
+    H, W = img.shape[:2]
+    pad = w // GYM_CONTEXT_PAD_DIV
+    ext = img[y : min(H, y + int(GYM_CONTEXT_HEIGHT_MULT * h)),
+              max(0, x - pad) : min(W, x + w + pad)]
+    return is_gym_photodisc(ext)
 
 
 def _in_range(val, lo_ratio, hi_ratio, dim):
@@ -216,6 +271,15 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
         # large, compact white disc), NOT by a raw white-pixel count -- a thin
         # spinning VFX ring crossing a Pokemon must not trip this.
         if is_gym_photodisc(img[y : y + h, x : x + w]):
+            continue
+
+        # Reject anything standing ON a gym (tower-top fragments, defenders):
+        # same disc test on the context BELOW the bbox.
+        if has_gym_below(img, x, y, w, h):
+            continue
+
+        # Reject flat single-hue UI badges (raid / elite-raid / timer pills).
+        if is_flat_badge(img[y : y + h, x : x + w]):
             continue
 
         cx = x + w / 2.0
