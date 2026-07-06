@@ -165,16 +165,21 @@ def test_await_encounter_returns_frame_on_first_confirmed_frame():
     loop, device, _, _ = make_loop(
         Scripted([ScreenState.UNKNOWN]), Scripted([True]), close_check=lambda img: False
     )
-    assert loop._await_encounter(100000) is not None
+    enc_img, _ = loop._await_encounter(100000)
+    assert enc_img is not None
     assert device.screencaps == 1        # proceeded instantly, did not wait the timeout
 
 
 def test_await_encounter_bails_on_first_frame_when_close_button_present():
-    # a gym / PokeStop / menu opened (its X is visible) -> bail at once, no waiting
+    # a gym / PokeStop / menu / Rocket dialog opened (its X is visible) -> bail
+    # at once, no waiting -- and hand back the bail frame so _recover can act on
+    # it without another screencap.
     loop, device, _, _ = make_loop(
         Scripted([ScreenState.UNKNOWN]), Scripted([False]), close_check=lambda img: True
     )
-    assert loop._await_encounter(100000) is None
+    enc_img, bail_img = loop._await_encounter(100000)
+    assert enc_img is None
+    assert bail_img is not None          # the frame with the X, for _recover
     assert device.screencaps == 1        # bailed on the first frame
 
 
@@ -184,8 +189,22 @@ def test_await_encounter_bails_when_still_map_after_transition_window():
     loop, device, _, _ = make_loop(
         Scripted([ScreenState.MAP]), Scripted([False]), close_check=lambda img: False
     )
-    assert loop._await_encounter(100000) is None
+    enc_img, _ = loop._await_encounter(100000)
+    assert enc_img is None
     assert device.screencaps < 30        # bailed ~_MAP_BAIL_MS in, not after 100s
+
+
+def test_recover_uses_provided_frame_without_extra_screencap():
+    # tick already has the frame in hand -> _recover's FIRST attempt must act on
+    # it directly (tap the X) instead of paying another ~0.6s screencap.
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), close_check=lambda img: True
+    )
+    loop._recover(img=DUMMY_IMG)
+    assert loop._pt("close_button") in device.taps
+    # screencaps only from the post-tap "back to playable?" poll, not attempt 1
+    assert device.screencaps >= 1
 
 
 def test_mistap_gym_never_throws_and_recovers_via_close_button():

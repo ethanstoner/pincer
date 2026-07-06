@@ -122,53 +122,63 @@ class CatchLoop:
     def _await_encounter(self, timeout_ms):
         """After tapping a map target, wait for the encounter UI -- but BAIL the
         instant it's clear no encounter will open, instead of burning the whole
-        timeout. Returns the confirmed encounter frame, or None to back out.
+        timeout. Returns (enc_img, last_img): `enc_img` is the confirmed
+        encounter frame or None to back out; `last_img` is the frame seen at the
+        decision point, so the caller can hand it straight to _recover instead
+        of paying another ~0.6s screencap.
 
         Bail-fast cases (the common mis-tap costs):
-          - a closable panel opened (gym / PokeStop / menu) -> its X is visible;
+          - a closable panel opened (gym / stop / menu / Rocket) -> its X is visible;
           - we're still on the MAP past the transition window -> tap hit nothing.
         Neither can ever be a loading encounter, so leaving early is safe. INV-1
-        is preserved: a None return routes the caller to _recover, never a throw.
+        is preserved: a None enc_img routes the caller to _recover, never a throw.
         """
         start = self.clock()
+        last_img = None
         while True:
             img = self.device.screencap()
             if img is not None:
+                last_img = img
                 if self.encounter_check(img):
-                    return img  # encounter UI confirmed -> the ONLY throw path
+                    return img, img  # encounter UI confirmed -> the ONLY throw path
                 if self.close_check(img):
-                    return None  # gym / stop / menu opened -> bail now
+                    return None, img  # gym / stop / menu opened -> bail now
                 elapsed = (self.clock() - start) * 1000.0
                 if elapsed >= self._MAP_BAIL_MS and self.classifier(img) == ScreenState.MAP:
-                    return None  # transition window passed, still map -> tap opened nothing
+                    return None, img  # transition window passed, still map -> tap opened nothing
             if (self.clock() - start) * 1000.0 >= timeout_ms:
-                return None
+                return None, last_img
             self.sleep_fn(self._POLL_INTERVAL_MS / 1000.0)
 
     # --- recovery (NEVER throws) ------------------------------------------
-    def _recover(self, state=None):
+    def _recover(self, state=None, img=None):
         """Get back to a playable screen after a mis-tap. INV-2: never throws.
+
+        `img`, when given, is a frame the caller ALREADY captured (tick's frame
+        or _await_encounter's bail frame) -- the first attempt acts on it
+        directly instead of paying another ~0.6s screencap.
 
         Rules, in order, per attempt:
           - MAP or ENCOUNTER  -> done. We NEVER disrupt an encounter (no flee):
             an encounter is a catch opportunity, so recovery just yields and the
             next tick's throw loop handles it.
-          - close button visible (gym / PokeStop / menu) -> tap the on-screen X
-            (the game ignores the Android back button) and poll for a playable
-            screen.
+          - close button visible (gym / stop / menu / Rocket) -> tap the
+            on-screen X (the game ignores the Android back button) and poll
+            for a playable screen.
           - otherwise (UNKNOWN, no X: an encounter still loading, or a catch
             animation) -> wait briefly and re-check. Deliberately NO key_back
             here: pressing back on a mid-load encounter would flee it.
         """
         playable = (ScreenState.MAP, ScreenState.ENCOUNTER)
         for _ in range(self._RECOVER_ATTEMPTS):
-            img = self.device.screencap()
-            if img is None:
+            frame = img if img is not None else self.device.screencap()
+            img = None  # a caller-provided frame is only current for attempt 1
+            if frame is None:
                 self._sleep((150, 300))
                 continue
-            if self.classifier(img) in playable:
+            if self.classifier(frame) in playable:
                 return
-            if self.close_check(img):
+            if self.close_check(frame):
                 self.device.tap(*self._pt("close_button"))
                 _, ok = self._poll(
                     lambda im: self.classifier(im) in playable,
@@ -244,10 +254,11 @@ class CatchLoop:
             )
 
             # Proceed the instant the encounter UI appears; bail fast otherwise.
-            enc_img = self._await_encounter(self._timeout("encounter_load_ms"))
+            enc_img, bail_img = self._await_encounter(self._timeout("encounter_load_ms"))
             if enc_img is None:
-                # Tap did not open an encounter -> back out. INV-1: no throw.
-                self._recover()
+                # Tap did not open an encounter -> back out on the frame we
+                # already have (no extra screencap). INV-1: no throw.
+                self._recover(img=bail_img)
                 return
 
             # Throw at once on the confirmed frame; self-label AFTER so the PNG
@@ -259,7 +270,7 @@ class CatchLoop:
             self._run_throw_loop()  # entered mid-encounter
 
         else:  # POKESTOP, GYM, or UNKNOWN
-            self._recover(state)
+            self._recover(state, img=img)  # reuse tick's frame: no extra screencap
 
     def run(self, stop_event):
         while not stop_event.is_set():

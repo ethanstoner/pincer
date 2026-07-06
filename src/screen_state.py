@@ -115,37 +115,54 @@ def in_encounter(img: np.ndarray) -> bool:
     return all(s >= _MATCH_THRESHOLD for s in encounter_scores(img))
 
 
-# --- closable-panel (gym / PokeStop / menu) detection --------------------------
-# Gyms, PokeStops and full-screen menus all show a circular X close button at the
-# bottom-centre that the map and encounter screens do NOT have. Detecting it lets
-# the catch loop bail out of a mis-tapped panel immediately, instead of waiting
-# out the whole encounter-load timeout. Measured close_x match scores:
-#   gym / pokestop screens : ~1.000 (button is pixel-identical across panels)
-#   map / encounter screens: <= 0.64
-# The template is a TIGHT crop of the X GLYPH ONLY (not the surrounding panel):
-# a wider crop drags in the panel background, which differs by theme (dark gym vs
-# light-purple PokeStop) and tanked the score on PokeStops (0.57 -> stuck). The
-# tight glyph matches on BOTH: measured PokeStop 1.00, gym 0.85, map/encounter
-# <= 0.39. Threshold 0.60 sits in the gap (margin >= 0.21 either side).
+# --- closable-panel (gym / PokeStop / menu / Rocket) detection ------------------
+# Gyms, PokeStops, full-screen menus and Team GO Rocket grunt dialogs all show a
+# circular X close button at the bottom-centre that the map and encounter screens
+# do NOT have. Detecting it lets the catch loop bail out of a mis-tapped panel
+# immediately, instead of waiting out the whole encounter-load timeout.
+# The X comes in DIFFERENT THEMES, so this is a multi-template match (max score):
+#   - close_x.png: grey/white X glyph -- gym, PokeStop, menus. TIGHT crop of the
+#     glyph ONLY (a wider crop drags in the panel background, which differs by
+#     theme -- dark gym vs light-purple PokeStop -- and tanked the score on
+#     PokeStops, 0.57 -> stuck). Measured: PokeStop 1.00, gym 0.85,
+#     map/encounter <= 0.39.
+#   - close_x_rocket.png: white X on a filled teal disc -- Team GO Rocket grunt
+#     dialog. The grey template scores only 0.31 on it (got stuck on an invaded
+#     stop), AND the grunt screen's purple background fooled the MAP hue check,
+#     so classify() ran the detector on it. Cropped from a real stuck frame
+#     (tests/fixtures/rocket_grunt.png). Measured: rocket 1.0000, all other
+#     fixtures <= 0.17.
+# Threshold 0.60 sits in the gap for BOTH templates (margin >= 0.21 either side).
 _CLOSE_THRESHOLD = 0.60
-_CLOSE_ANCHOR = ("close_x.png", 0.498, 0.9527, 42)  # (file, cx ratio, cy ratio, half px)
+# (file, cx ratio, cy ratio, half px) -- one entry per close-button THEME
+_CLOSE_ANCHORS = [
+    ("close_x.png", 0.498, 0.9527, 42),
+    ("close_x_rocket.png", 0.500, 0.9455, 42),
+]
 
 
-def _load_close_template():
-    path = os.path.join(_TEMPLATE_DIR, _CLOSE_ANCHOR[0])
-    templ = cv2.imread(path)
-    if templ is None:
-        raise FileNotFoundError(f"close-button template missing: {path}")
-    return templ
+def _load_close_templates():
+    loaded = []
+    for fname, cxr, cyr, half in _CLOSE_ANCHORS:
+        path = os.path.join(_TEMPLATE_DIR, fname)
+        templ = cv2.imread(path)
+        if templ is None:
+            raise FileNotFoundError(f"close-button template missing: {path}")
+        loaded.append((templ, cxr, cyr, half))
+    return loaded
 
 
-_CLOSE_TEMPLATE = _load_close_template()
+_CLOSE_TEMPLATES = _load_close_templates()
+
+
+def close_button_scores(img: np.ndarray) -> list:
+    """Per-theme match scores for the bottom-centre X (exposed for tests/debug)."""
+    return [_anchor_score(img, t, cxr, cyr, half) for t, cxr, cyr, half in _CLOSE_TEMPLATES]
 
 
 def close_button_score(img: np.ndarray) -> float:
-    """Match score for the bottom-centre X close button (exposed for tests/debug)."""
-    _, cxr, cyr, half = _CLOSE_ANCHOR
-    return _anchor_score(img, _CLOSE_TEMPLATE, cxr, cyr, half)
+    """Best match score across all close-button themes."""
+    return max(close_button_scores(img))
 
 
 def has_close_button(img: np.ndarray) -> bool:
@@ -186,6 +203,13 @@ def classify(img: np.ndarray) -> ScreenState:
     scores = encounter_scores(img)
     if all(s >= _MATCH_THRESHOLD for s in scores):
         return ScreenState.ENCOUNTER
+
+    # A closable panel is checked BEFORE the map hue test: the Team GO Rocket
+    # grunt dialog's purple background lands inside the map hue/sat window, so
+    # hue alone mis-classified it as MAP and the loop kept running the detector
+    # on (and tapping) a dialog. Any bottom-centre X means "panel", never MAP.
+    if has_close_button(img):
+        return ScreenState.UNKNOWN
 
     full_h, full_s, _ = _region_hsv_mean(img, 0.0, 1.0, 0.0, 1.0)
     mid_h, mid_s, _ = _region_hsv_mean(img, 0.35, 0.65, 0.2, 0.8)
