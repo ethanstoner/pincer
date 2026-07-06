@@ -110,6 +110,7 @@ class CatchLoop:
         pokeball_check=_has_map_pokeball,
         ok_finder=_find_ok_button,
         clock=time.monotonic,
+        monitor=None,
     ):
         self.device = device
         self.config = config
@@ -126,6 +127,7 @@ class CatchLoop:
         self.pokeball_check = pokeball_check
         self.ok_finder = ok_finder
         self.clock = clock
+        self.monitor = monitor  # live-UI publisher (PhoneMonitor) or None
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
         self._last_target_t = None  # last time the detector found anything
@@ -436,6 +438,9 @@ class CatchLoop:
             return
 
         state = self.classifier(img)
+        if self.monitor is not None:
+            self.monitor.publish(img, state, fail_spots=self._fail_spots,
+                                 pan_speed=self._pan_speed)
 
         if state == ScreenState.MAP:
             now = self.clock()
@@ -472,10 +477,14 @@ class CatchLoop:
                 return
             self._last_target_t = now
 
-            self.device.tap(
-                self._jitter(target.x + int(lead_x), self._TAP_JITTER_PX),
-                self._jitter(target.y + int(lead_y), self._TAP_JITTER_PX),
-            )
+            tap_x = self._jitter(target.x + int(lead_x), self._TAP_JITTER_PX)
+            tap_y = self._jitter(target.y + int(lead_y), self._TAP_JITTER_PX)
+            if self.monitor is not None:
+                self.monitor.publish(img, state, target=target,
+                                     fail_spots=self._fail_spots,
+                                     pan_speed=self._pan_speed,
+                                     tap=(tap_x, tap_y))
+            self.device.tap(tap_x, tap_y)
 
             # Proceed the instant the encounter UI appears; bail fast otherwise.
             enc_img, bail_img = self._await_encounter(self._timeout("encounter_load_ms"))
@@ -488,6 +497,8 @@ class CatchLoop:
                     (target.x, target.y, self.clock() + self._FAIL_SPOT_TTL_S)
                 )
                 outcome = self._bail_outcome(bail_img)
+                if self.monitor is not None:
+                    self.monitor.bump(outcome)
                 if outcome == "panel":
                     # The tap provably hit an interactable non-Pokemon object:
                     # save it as a class-1 "avoid" YOLO example (hard negative).
@@ -506,6 +517,8 @@ class CatchLoop:
             # The catch took seconds: restart the camera-pan clock, else the
             # first briefly-empty rescan pans even with spawns still visible.
             self._last_target_t = self.clock()
+            if self.monitor is not None:
+                self.monitor.bump("encounter")
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter
@@ -517,6 +530,14 @@ class CatchLoop:
 
     def run(self, stop_event):
         while not stop_event.is_set():
+            if self.monitor is not None and self.monitor.pause_event.is_set():
+                # Paused from the live UI: keep publishing a heartbeat frame so
+                # the dashboard stays live, but touch nothing on the phone.
+                img = self.device.screencap()
+                if img is not None:
+                    self.monitor.publish(img, "PAUSED")
+                self.sleep_fn(0.4)
+                continue
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - one bad tick must not kill the phone

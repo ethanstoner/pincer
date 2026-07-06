@@ -63,5 +63,6 @@ class YoloDetector:
                     x=round(cx),
                     y=round(y1 + 0.32 * (y2 - y1)),
                     bbox=(round(x1), round(y1), round(x2 - x1), round(y2 - y1)),
+                    src="yolo",
                 )
         return best

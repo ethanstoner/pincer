@@ -108,7 +108,7 @@ def _make_detector_fn(config):
     return None  # None -> CatchLoop uses its default CV propose
 
 
-def _build_loops(config, phones, dry_run):
+def _build_loops(config, phones, dry_run, monitor_server=None):
     detector_fn = _make_detector_fn(config)
     loops = []
     for phone in phones:
@@ -118,6 +118,8 @@ def _build_loops(config, phones, dry_run):
         else:
             device.set_stay_awake()  # keep the display on for the whole run
         kwargs = {"detector_fn": detector_fn} if detector_fn else {}
+        if monitor_server is not None:
+            kwargs["monitor"] = monitor_server.register(phone.serial)
         loops.append(CatchLoop(device, config, phone, **kwargs))
     return loops
 
@@ -141,7 +143,17 @@ def main(argv):
         print("running phones: " + ", ".join(p.serial for p in phones))
 
     clear_click_audit(config.dataset_dir)  # fresh per-run click review folder
-    loops = _build_loops(config, phones, args.dry_run)
+
+    monitor_server = None
+    if not args.once:
+        from src.monitor import MonitorServer
+        monitor_server = MonitorServer(port=8750)
+
+    loops = _build_loops(config, phones, args.dry_run, monitor_server)
+
+    if monitor_server is not None:
+        monitor_server.start()
+        print("live monitor UI: http://127.0.0.1:8750/")
 
     if args.once:
         for loop in loops:

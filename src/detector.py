@@ -42,6 +42,7 @@ class Target:
     x: int
     y: int
     bbox: tuple  # (x, y, w, h)
+    src: str = "cv"  # which detector proposed it ("cv" / "yolo") -- for audit
 
 
 # --- Central detection region (ratios of width/height) ---
@@ -657,6 +658,8 @@ def save_click_debug(img: np.ndarray, target: Target, outcome: str, dataset_dir:
     x1, y1 = min(w, bx + bw + _CLICK_PAD), min(h, by + bh + _CLICK_PAD)
     crop = img[y0:y1, x0:x1].copy()
     cv2.rectangle(crop, (bx - x0, by - y0), (bx - x0 + bw, by - y0 + bh), (0, 0, 255), 3)
+    cv2.putText(crop, getattr(target, "src", "?"), (4, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
     if result_img is not None:
         ch = crop.shape[0]
