@@ -406,6 +406,19 @@ def test_camera_pans_after_empty_scans_but_not_immediately():
     assert device.taps == []                         # never tapped anything
 
 
+def test_no_tap_while_view_is_rotating_fast():
+    # High measured pan speed = motion-blurred frame -> detections mislocate
+    # (live: taps landed on stops). The tick must skip the tap entirely.
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, _, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]),
+        detector_fn=lambda img, phone: target,
+    )
+    loop._pan_speed = 1000.0            # rotating (tiny test frames don't update it)
+    loop.tick()
+    assert device.taps == []            # no tap on a blurred frame
+
+
 def test_no_camera_pan_right_after_a_catch():
     # A catch takes seconds; the camera-pan clock must restart afterwards so a
     # briefly-empty first rescan does NOT pan (live bug: panned after every

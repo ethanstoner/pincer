@@ -40,7 +40,7 @@ class _StreamCapture:
             try:
                 self._proc = subprocess.Popen(
                     [self.adb_path, "-s", self.serial, "exec-out", "screenrecord",
-                     "--output-format=h264", "--bit-rate=8000000",
+                     "--output-format=h264", "--bit-rate=16000000",
                      f"--time-limit={self._SEGMENT_S}", "-"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,

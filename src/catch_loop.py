@@ -82,6 +82,10 @@ class CatchLoop:
     _CAMERA_PAN_X = (0.78, 0.22)  # right-to-left sweep rotates ~a third turn
     _CAMERA_PAN_MS = (220, 300)
     _CAMERA_PAN_SETTLE_MS = (250, 400)
+    _BLUR_SPEED_MAX = 260         # px/s: above this the H.264 frame is motion-
+                                  # blurred (camera rotating) -> don't trust
+                                  # detections, skip the tap this tick. Walking
+                                  # pan measures ~150-190 px/s and stays OK.
     _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
                                       # (1.2s misfiled slow day encounter loads as 'nothing')
 
@@ -121,6 +125,7 @@ class CatchLoop:
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
         self._last_target_t = None  # last time the detector found anything
+        self._pan_speed = 0.0       # last measured scene pan speed (px/s)
         # Streamed frames are fresher than pulled ones -> shorter tap lead.
         self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
@@ -243,6 +248,8 @@ class CatchLoop:
                 vx = dx * self._PAN_DOWNSCALE / dt
                 vy = dy * self._PAN_DOWNSCALE / dt
                 speed = math.hypot(vx, vy)
+                if response >= self._PAN_MIN_RESPONSE:
+                    self._pan_speed = speed
                 if (response >= self._PAN_MIN_RESPONSE
                         and self._PAN_MIN_SPEED < speed < self._PAN_MAX_SPEED):
                     lead = (vx * self._tap_lead_s, vy * self._tap_lead_s)
@@ -413,6 +420,12 @@ class CatchLoop:
         if state == ScreenState.MAP:
             now = self.clock()
             lead_x, lead_y = self._pan_lead(img, now)  # motion compensation
+            if self._pan_speed > self._BLUR_SPEED_MAX:
+                # View is rotating fast -> this H.264 frame is motion-blurred
+                # and detections on it mislocate (live: taps landed on stops).
+                # Skip the tick; the view settles within a frame or two.
+                self._sleep(self.config.timing["map_scan_ms"])
+                return
             self._fail_spots = [s for s in self._fail_spots if s[2] > now]
             exclude = [(fx, fy, self._FAIL_SPOT_RADIUS) for fx, fy, _ in self._fail_spots]
             if self._detector_takes_exclude:

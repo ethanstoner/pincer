@@ -55,9 +55,13 @@ class YoloDetector:
             dist = math.hypot(cx - ax, cy - ay)
             if best_dist is None or dist < best_dist:
                 best_dist = dist
+                # Tap the sprite's UPPER THIRD, not its centre: a Pokemon
+                # standing on/near a PokeStop has the stop's generous ground-
+                # level hit region right at its box centre, and the stop was
+                # stealing the tap (live audit: stop panel opened on mon taps).
                 best = Target(
                     x=round(cx),
-                    y=round(cy),
+                    y=round(y1 + 0.32 * (y2 - y1)),
                     bbox=(round(x1), round(y1), round(x2 - x1), round(y2 - y1)),
                 )
         return best
