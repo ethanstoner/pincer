@@ -1,0 +1,21 @@
+{
+  "adb_path": "adb.exe",
+  "dataset_dir": "dataset",
+  "phones": [
+    { "serial": "PHONE_A", "width": 1080, "height": 2388 },
+    { "serial": "PHONE_B", "width": 1080, "height": 2388 }
+  ],
+  "anchors_ratio": {
+    "ball_center":   [0.50000, 0.88944],
+    "throw_start":   [0.50000, 0.83752],
+    "throw_end":     [0.50000, 0.35595],
+    "flee_button":   [0.04815, 0.06072]
+  },
+  "timing": {
+    "encounter_load_ms": [1, 2],
+    "post_throw_ms":     [1, 2],
+    "map_scan_ms":       [1, 2],
+    "stuck_timeout_ms":  15,
+    "max_throws": 3
+  }
+}

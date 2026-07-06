@@ -28,6 +28,7 @@ class CatchLoop:
     _TAP_JITTER_PX = 5
     _SWIPE_JITTER_PX = 5
     _THROW_DURATION_MS_RANGE = (120, 180)
+    _ERROR_BACKOFF_MS = (1000, 1000)  # brief pause after a crashed tick
 
     def __init__(
         self,
@@ -151,5 +152,12 @@ class CatchLoop:
 
     def run(self, stop_event):
         while not stop_event.is_set():
-            self.tick()
+            try:
+                self.tick()
+            except Exception as exc:  # noqa: BLE001 - one bad tick must not kill the phone
+                # Transient adb hiccup or a weird screen: log, back off briefly,
+                # and keep going. The loop only exits when stop_event is set.
+                print(f"[{self.phone.serial}] tick error: {exc}")
+                self._sleep(self._ERROR_BACKOFF_MS)
+                continue
             self._sleep(self.config.timing["map_scan_ms"])

@@ -82,7 +82,10 @@ def main(argv):
 
     previous_handler = signal.signal(signal.SIGINT, _handle_sigint)
 
-    threads = [threading.Thread(target=loop.run, args=(stop_event,)) for loop in loops]
+    threads = [
+        threading.Thread(target=loop.run, args=(stop_event,), daemon=True)
+        for loop in loops
+    ]
     for t in threads:
         t.start()
 
@@ -94,8 +97,13 @@ def main(argv):
         stop_event.set()
     finally:
         stop_event.set()
+        # Bounded-latency shutdown: stop_event is checked between ticks so most
+        # threads exit immediately; give any mid-wait tick up to 5s, then move
+        # on (daemon threads are reaped at process exit).
         for t in threads:
-            t.join()
+            t.join(timeout=5)
+            if t.is_alive():
+                print("[runner] a phone worker is still finishing; exiting anyway")
         signal.signal(signal.SIGINT, previous_handler)
 
 
