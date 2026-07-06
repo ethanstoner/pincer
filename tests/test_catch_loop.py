@@ -2,7 +2,6 @@ import random
 import threading
 
 import numpy as np
-import pytest
 
 from src.catch_loop import CatchLoop
 from src.config import Config, Phone
@@ -14,15 +13,12 @@ DUMMY_IMG = np.zeros((4, 4, 3), np.uint8)
 
 
 class FakeDevice:
-    def __init__(self, screencaps=None):
+    def __init__(self):
         self.taps = []
         self.swipes = []
         self.key_backs = []
-        self._screencaps = list(screencaps) if screencaps else None
 
     def screencap(self):
-        if self._screencaps is not None and self._screencaps:
-            return self._screencaps.pop(0)
         return DUMMY_IMG
 
     def tap(self, x, y):
@@ -35,21 +31,20 @@ class FakeDevice:
         self.key_backs.append(True)
 
 
-class ScriptedClassifier:
-    """Returns states from a preset list in order; repeats the last state
-    forever once exhausted (handy for "many ENCOUNTER calls" tests)."""
+class Scripted:
+    """Callable double: yields values from a list, sticking on the last one
+    once exhausted (predicates are polled repeatedly, so exact call counts
+    must not matter -- only the sequence tail)."""
 
-    def __init__(self, states):
-        self.states = list(states)
+    def __init__(self, values):
+        self.values = list(values)
         self.calls = 0
 
-    def __call__(self, img):
+    def __call__(self, *args, **kwargs):
         self.calls += 1
-        if self.states:
-            if len(self.states) == 1:
-                return self.states[0]
-            return self.states.pop(0)
-        return ScreenState.UNKNOWN
+        if len(self.values) > 1:
+            return self.values.pop(0)
+        return self.values[0]
 
 
 def make_config():
@@ -64,8 +59,8 @@ def make_config():
             "flee_button": [0.04815, 0.06072],
         },
         timing={
-            "encounter_load_ms": [1, 2],
-            "post_throw_ms": [1, 2],
+            "encounter_load_ms": [1, 2],   # -> encounter poll timeout ~2ms
+            "post_throw_ms": [1, 2],       # -> resolve poll timeout ~2ms
             "map_scan_ms": [1, 2],
             "stuck_timeout_ms": 15,
             "max_throws": 3,
@@ -73,7 +68,7 @@ def make_config():
     )
 
 
-def make_loop(classifier, device=None, detector_fn=None, labeler=None, rng=None):
+def make_loop(classifier, encounter_check, device=None, detector_fn=None, labeler=None):
     config = make_config()
     phone = config.phones[0]
     device = device or FakeDevice()
@@ -85,7 +80,6 @@ def make_loop(classifier, device=None, detector_fn=None, labeler=None, rng=None)
         return "labeled.png"
 
     labeler = labeler or default_labeler
-    rng = rng or random.Random(42)
     sleeps = []
 
     def sleep_fn(seconds):
@@ -99,15 +93,17 @@ def make_loop(classifier, device=None, detector_fn=None, labeler=None, rng=None)
         detector_fn=detector_fn,
         labeler=labeler,
         sleep_fn=sleep_fn,
-        rng=rng,
+        rng=random.Random(42),
+        encounter_check=encounter_check,
     )
     return loop, device, calls, sleeps
 
 
 def test_caught_path_taps_once_labels_once_throws_and_no_flee_or_recover():
-    classifier = ScriptedClassifier(
-        [ScreenState.MAP, ScreenState.ENCOUNTER, ScreenState.ENCOUNTER, ScreenState.MAP]
-    )
+    # initial state MAP; after tap the encounter UI appears (in_encounter True);
+    # one throw, then classify sees MAP (caught) -> done.
+    classifier = Scripted([ScreenState.MAP])          # MAP initially and on resolve poll
+    encounter_check = Scripted([True])                # encounter confirmed throughout
     target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
     detector_fn = lambda img, phone: target
     label_calls = []
@@ -116,152 +112,136 @@ def test_caught_path_taps_once_labels_once_throws_and_no_flee_or_recover():
         label_calls.append((img, tgt, dataset_dir))
         return "path.png"
 
-    loop, device, _, _ = make_loop(classifier, detector_fn=detector_fn, labeler=labeler)
+    loop, device, _, _ = make_loop(
+        classifier, encounter_check, detector_fn=detector_fn, labeler=labeler
+    )
 
     loop.tick()
 
-    # exactly one detect tap near the target (jitter allowed within a few px)
     assert len(device.taps) == 1
     tx, ty = device.taps[0]
-    assert abs(tx - target.x) <= 10
-    assert abs(ty - target.y) <= 10
-
-    assert len(label_calls) == 1
-    assert label_calls[0][1] is target
-
-    # at least one throw swipe recorded
-    assert len(device.swipes) >= 1
-
-    # ends without flee tap and no key_back
-    flee_x, flee_y = 52, 145  # resolve_point(flee_button, phone) approx
-    assert device.key_backs == []
+    assert abs(tx - target.x) <= 10 and abs(ty - target.y) <= 10
+    assert len(label_calls) == 1 and label_calls[0][1] is target
+    assert len(device.swipes) >= 1          # threw at least once
+    assert device.key_backs == []           # no recover
 
 
 def test_wrong_target_never_throws_and_recovers():
-    # tap did not open an encounter -> classifier stays MAP
-    classifier = ScriptedClassifier([ScreenState.MAP, ScreenState.MAP])
+    # tap did NOT open an encounter: in_encounter stays False -> encounter poll
+    # times out -> _recover -> return. SAFETY: no throw ever happens.
+    classifier = Scripted([ScreenState.MAP])   # still MAP after the failed tap
+    encounter_check = Scripted([False])        # encounter NEVER confirmed
     target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
     detector_fn = lambda img, phone: target
 
-    loop, device, calls_holder, _ = make_loop(classifier, detector_fn=detector_fn)
+    loop, device, calls, _ = make_loop(
+        classifier, encounter_check, detector_fn=detector_fn
+    )
 
     loop.tick()
 
-    # detect tap happened
-    assert len(device.taps) == 1
-
-    # NO throw swipe recorded
-    assert device.swipes == []
-
-    # labeler NOT called
-    assert calls_holder["labels"] == []
-
-    # a recover action (key_back) occurred since state is MAP/UNKNOWN-ish;
-    # per spec MAP after failed tap goes through _recover(), and since state
-    # is neither ENCOUNTER nor POKESTOP/GYM, _recover treats it as the
-    # "not ENCOUNTER, not POKESTOP/GYM" -> UNKNOWN-style key_back path.
-    assert len(device.key_backs) >= 1
+    assert len(device.taps) == 1     # the detect tap happened
+    assert device.swipes == []       # but NO throw
+    assert calls["labels"] == []     # and NO self-label
+    assert len(device.key_backs) >= 1  # a recover occurred
 
 
 def test_no_target_no_tap_no_swipe_no_label():
-    classifier = ScriptedClassifier([ScreenState.MAP])
+    classifier = Scripted([ScreenState.MAP])
+    encounter_check = Scripted([False])
     detector_fn = lambda img, phone: None
 
-    loop, device, calls_holder, sleeps = make_loop(classifier, detector_fn=detector_fn)
+    loop, device, calls, sleeps = make_loop(
+        classifier, encounter_check, detector_fn=detector_fn
+    )
 
     loop.tick()
 
     assert device.taps == []
     assert device.swipes == []
-    assert calls_holder["labels"] == []
+    assert calls["labels"] == []
     assert len(sleeps) >= 1  # scan wait happened
 
 
 def test_stubborn_pokemon_hits_throw_cap_then_flees():
-    # Enters via ENCOUNTER directly (mid-encounter), stays ENCOUNTER forever
-    classifier = ScriptedClassifier([ScreenState.ENCOUNTER])
+    # Enters mid-encounter; classify NEVER returns MAP (never caught) and
+    # in_encounter stays True -> throws until the cap, then flees.
+    classifier = Scripted([ScreenState.ENCOUNTER])  # initial ENCOUNTER, never MAP
+    encounter_check = Scripted([True])              # always still in encounter
 
-    loop, device, _, _ = make_loop(classifier)
+    loop, device, _, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     max_throws = loop.config.timing["max_throws"]
     assert len(device.swipes) == max_throws
-
-    flee_point = loop._pt("flee_button")
-    assert device.taps == [flee_point]
+    assert device.taps == [loop._pt("flee_button")]   # fled after the cap
 
 
 def test_recover_on_pokestop_then_map():
-    classifier = ScriptedClassifier([ScreenState.POKESTOP, ScreenState.MAP])
-    loop, device, calls_holder, _ = make_loop(classifier)
+    classifier = Scripted([ScreenState.POKESTOP, ScreenState.MAP])
+    encounter_check = Scripted([False])
+    loop, device, calls, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     assert device.swipes == []
     assert len(device.key_backs) >= 1
-    assert calls_holder["labels"] == []
+    assert calls["labels"] == []
 
 
 def test_recover_on_gym_then_map():
-    classifier = ScriptedClassifier([ScreenState.GYM, ScreenState.MAP])
-    loop, device, calls_holder, _ = make_loop(classifier)
+    classifier = Scripted([ScreenState.GYM, ScreenState.MAP])
+    encounter_check = Scripted([False])
+    loop, device, calls, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     assert device.swipes == []
     assert len(device.key_backs) >= 1
-    assert calls_holder["labels"] == []
+    assert calls["labels"] == []
 
 
 def test_recover_never_throws_on_unknown():
-    classifier = ScriptedClassifier([ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP])
-    loop, device, calls_holder, _ = make_loop(classifier)
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])
+    encounter_check = Scripted([False])
+    loop, device, calls, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     assert device.swipes == []
-    assert calls_holder["labels"] == []
+    assert calls["labels"] == []
 
 
 def test_recover_method_directly_never_swipes_for_all_non_encounter_states():
-    for state in (ScreenState.UNKNOWN, ScreenState.POKESTOP, ScreenState.GYM):
-        classifier = ScriptedClassifier([ScreenState.MAP])
-        loop, device, _, _ = make_loop(classifier)
+    for state in (ScreenState.ENCOUNTER, ScreenState.UNKNOWN, ScreenState.POKESTOP, ScreenState.GYM):
+        classifier = Scripted([ScreenState.MAP])   # _poll_until_map resolves fast
+        encounter_check = Scripted([False])
+        loop, device, _, _ = make_loop(classifier, encounter_check)
         loop._recover(state)
         assert device.swipes == []
 
 
 def test_recover_terminates_on_stuck_timeout_without_hanging_or_throwing():
-    # classifier NEVER returns MAP -> exercises _poll_until_map's
-    # elapsed >= stuck_timeout_ms -> return False branch, and the resulting
-    # second key_back in the UNKNOWN recover branch. Proves "nothing hangs".
-    class AlwaysUnknown:
-        def __init__(self):
-            self.calls = 0
-
-        def __call__(self, img):
-            self.calls += 1
-            return ScreenState.UNKNOWN
-
-    classifier = AlwaysUnknown()
-    loop, device, calls_holder, _ = make_loop(classifier)
-    # small stuck_timeout so the bounded poll loop expires fast
-    loop.config.timing["stuck_timeout_ms"] = 15
+    # classifier NEVER returns MAP -> exercises the poll stuck-timeout expiry
+    # branch and the resulting second key_back in the UNKNOWN recover branch.
+    classifier = Scripted([ScreenState.UNKNOWN])   # sticky UNKNOWN forever
+    encounter_check = Scripted([False])
+    loop, device, calls, _ = make_loop(classifier, encounter_check)
+    loop.config.timing["stuck_timeout_ms"] = 15    # small so the poll expires fast
 
     loop.tick()  # UNKNOWN -> _recover; must TERMINATE (no hang)
 
-    # recover never throws, even when it times out
-    assert device.swipes == []
-    assert calls_holder["labels"] == []
-    # UNKNOWN branch: key_back once, then (poll never sees MAP -> False) key_back again
-    assert device.key_backs == [True, True]
+    assert device.swipes == []          # recover never throws, even on timeout
+    assert calls["labels"] == []
+    assert device.key_backs == [True, True]  # entry back + post-timeout back
 
 
 def test_run_loop_calls_tick_until_stop_event_set():
-    classifier = ScriptedClassifier([ScreenState.MAP])
+    classifier = Scripted([ScreenState.MAP])
+    encounter_check = Scripted([False])
     detector_fn = lambda img, phone: None
-    loop, device, _, sleeps = make_loop(classifier, detector_fn=detector_fn)
+    loop, device, _, _ = make_loop(classifier, encounter_check, detector_fn=detector_fn)
 
     stop_event = threading.Event()
     call_count = {"n": 0}

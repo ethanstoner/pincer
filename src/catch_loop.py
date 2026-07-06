@@ -1,16 +1,20 @@
-"""Per-phone catch loop state machine.
+"""Per-phone catch loop state machine (event-driven / polling).
+
+Speed model: instead of blind fixed sleeps, the loop POLLS a cheap predicate
+and proceeds the instant the screen changes -- so a catch resolves in ~one
+network round-trip, not a worst-case timing constant. The timing config values
+are reinterpreted as poll *timeouts* (upper bound), not durations to wait out.
 
 Safety contract (structural, not incidental):
-  - A ball is only ever thrown from inside `_run_throw_loop`, which is only
-    ever entered after `classifier(...)` has returned `ScreenState.ENCOUNTER`
-    for a freshly captured screenshot (either because we just tapped a
-    detected target and re-confirmed ENCOUNTER, or because the loop started
-    mid-encounter).
-  - `_recover` NEVER calls `_throw` / `device.swipe` under any branch. It only
-    taps `flee_button` (a UI escape, not a throw) or presses back.
-  - Any tap on a detected map target is verified by re-classifying the screen
-    afterward; if it did not open an ENCOUNTER, control goes straight to
-    `_recover` and no throw is attempted.
+  - INV-1: a throw (device.swipe via _throw) only ever happens after
+    `self.encounter_check(img)` returned True for a screenshot taken in that
+    same loop iteration. `_run_throw_loop`'s while-body screencaps, bails if the
+    image is None or not an encounter, and only THEN throws. The MAP-branch
+    only enters `_run_throw_loop` after `_poll(encounter_check, ...)` confirmed
+    the encounter UI appeared; the wrong-tap path (poll fails) routes to
+    `_recover` and returns before any throw.
+  - INV-2: `_recover` NEVER throws / swipes. It only taps `flee_button` (a UI
+    escape, not a ball throw) or presses back, then polls for MAP.
 """
 
 import random
@@ -21,10 +25,11 @@ from src.detector import propose
 from src.detector import save_label as _save_label
 from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
+from src.screen_state import in_encounter as _in_encounter
 
 
 class CatchLoop:
-    _POLL_INTERVAL_MS = 500
+    _POLL_INTERVAL_MS = 80    # how often we re-check while polling (rapid-fire)
     _TAP_JITTER_PX = 5
     _SWIPE_JITTER_PX = 5
     _THROW_DURATION_MS_RANGE = (120, 180)
@@ -40,6 +45,7 @@ class CatchLoop:
         labeler=_save_label,
         sleep_fn=time.sleep,
         rng=None,
+        encounter_check=_in_encounter,
     ):
         self.device = device
         self.config = config
@@ -49,13 +55,20 @@ class CatchLoop:
         self.labeler = labeler
         self.sleep_fn = sleep_fn
         self.rng = rng if rng is not None else random.Random()
+        self.encounter_check = encounter_check
 
+    # --- small helpers -----------------------------------------------------
     def _sleep(self, ms_range):
         lo, hi = ms_range
         self.sleep_fn(self.rng.uniform(lo, hi) / 1000.0)
 
     def _pt(self, name):
         return resolve_point(self.config.anchors_ratio[name], self.phone)
+
+    def _timeout(self, key):
+        """Poll timeout (ms) from a timing key. Ranges use their UPPER bound."""
+        v = self.config.timing[key]
+        return v[1] if isinstance(v, (list, tuple)) else v
 
     def _jitter(self, value, spread):
         return value + self.rng.randint(-spread, spread)
@@ -72,55 +85,86 @@ class CatchLoop:
             duration,
         )
 
-    def _poll_until_map(self):
-        """Poll classify(screencap()) until MAP or stuck_timeout_ms elapses.
+    # --- polling core ------------------------------------------------------
+    def _poll(self, predicate, timeout_ms, interval_ms=None):
+        """Poll until predicate(screencap()) is True or timeout_ms elapses.
 
-        Never throws; only observes. Bounded so it can't spin forever even
-        if the phone is genuinely stuck (or in tests, when the scripted
-        classifier never yields MAP).
+        Returns (img, ok). `img` is the frame that satisfied the predicate, or
+        the last non-None frame seen on timeout. Elapsed time is counted in
+        fixed interval steps so a no-op sleep_fn still terminates deterministically.
+        Screencap None (truncated PNG) is skipped -- never fed to the predicate.
         """
-        stuck_timeout_ms = self.config.timing["stuck_timeout_ms"]
+        interval_ms = interval_ms if interval_ms is not None else self._POLL_INTERVAL_MS
         elapsed = 0
+        last_img = None
         while True:
             img = self.device.screencap()
-            if self.classifier(img) == ScreenState.MAP:
-                return True
-            if elapsed >= stuck_timeout_ms:
-                return False
-            self._sleep([self._POLL_INTERVAL_MS, self._POLL_INTERVAL_MS])
-            elapsed += self._POLL_INTERVAL_MS
+            if img is not None:
+                last_img = img
+                if predicate(img):
+                    return img, True
+            if elapsed >= timeout_ms:
+                return last_img, False
+            self.sleep_fn(interval_ms / 1000.0)
+            elapsed += interval_ms
 
+    def _poll_until_map(self):
+        _, ok = self._poll(
+            lambda im: self.classifier(im) == ScreenState.MAP,
+            self.config.timing["stuck_timeout_ms"],
+        )
+        return ok
+
+    # --- recovery (NEVER throws) ------------------------------------------
     def _recover(self, state):
-        """Bring the phone back to a known MAP state. NEVER throws."""
+        """Bring the phone back to a known MAP state. INV-2: never throws."""
         if state == ScreenState.ENCOUNTER:
             self.device.tap(*self._pt("flee_button"))
             self._poll_until_map()
         elif state in (ScreenState.POKESTOP, ScreenState.GYM):
             self.device.key_back()
             self._poll_until_map()
-        else:  # UNKNOWN (or any other non-confirmed state)
+        else:  # UNKNOWN / any non-confirmed state
             self.device.key_back()
             if not self._poll_until_map():
                 self.device.key_back()
 
+    # --- throw loop (INV-1 lives here) ------------------------------------
     def _run_throw_loop(self):
         max_throws = self.config.timing["max_throws"]
+        resolve_timeout_ms = self._timeout("post_throw_ms")
+
         throws = 0
         while throws < max_throws:
             img = self.device.screencap()
-            if self.classifier(img) != ScreenState.ENCOUNTER:
-                return  # caught or fled -> done
-            self._throw()
-            throws += 1
-            self._sleep(self.config.timing["post_throw_ms"])
+            if img is None or not self.encounter_check(img):
+                return  # resolved (caught / fled) or the encounter is gone
 
-        # Cap hit and still in ENCOUNTER -> give up on this Pokemon.
-        if self.classifier(self.device.screencap()) == ScreenState.ENCOUNTER:
+            self._throw()  # SAFE: guarded by encounter_check(img) True just above
+            throws += 1
+
+            # Wait for the result: caught -> back to MAP; broke free -> still an
+            # encounter once the shake animation ends. Poll instead of sleeping.
+            _, got_map = self._poll(
+                lambda im: self.classifier(im) == ScreenState.MAP,
+                resolve_timeout_ms,
+            )
+            if got_map:
+                return  # caught / returned to map
+
+        # Cap reached and still in an encounter -> give up on this Pokemon.
+        img = self.device.screencap()
+        if img is not None and self.encounter_check(img):
             self.device.tap(*self._pt("flee_button"))
             self._poll_until_map()
 
+    # --- one iteration -----------------------------------------------------
     def tick(self):
         img = self.device.screencap()
+        if img is None:
+            self._sleep(self.config.timing["map_scan_ms"])
+            return
+
         state = self.classifier(img)
 
         if state == ScreenState.MAP:
@@ -133,15 +177,16 @@ class CatchLoop:
                 self._jitter(target.x, self._TAP_JITTER_PX),
                 self._jitter(target.y, self._TAP_JITTER_PX),
             )
-            self._sleep(self.config.timing["encounter_load_ms"])
 
-            img2 = self.device.screencap()
-            state2 = self.classifier(img2)
-            if state2 != ScreenState.ENCOUNTER:
-                self._recover(state2)  # wrong tap -> back out, NEVER throw
+            # Proceed the instant the encounter UI appears; bail if it never does.
+            img2, ok = self._poll(self.encounter_check, self._timeout("encounter_load_ms"))
+            if not ok:
+                # Tap did not open an encounter -> back out. INV-1: no throw.
+                fallback = self.classifier(img2) if img2 is not None else ScreenState.UNKNOWN
+                self._recover(fallback)
                 return
 
-            self.labeler(img, target, self.config.dataset_dir)
+            self.labeler(img, target, self.config.dataset_dir)  # confirmed -> self-label
             self._run_throw_loop()
 
         elif state == ScreenState.ENCOUNTER:
@@ -160,4 +205,4 @@ class CatchLoop:
                 print(f"[{self.phone.serial}] tick error: {exc}")
                 self._sleep(self._ERROR_BACKOFF_MS)
                 continue
-            self._sleep(self.config.timing["map_scan_ms"])
+            self._sleep(self.config.timing["map_scan_ms"])  # snappy map->detect scan

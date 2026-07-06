@@ -1,9 +1,22 @@
 import cv2
 import numpy as np
 import pytest
-from src.screen_state import classify, ScreenState, encounter_scores, _MATCH_THRESHOLD
+from src.screen_state import classify, ScreenState, encounter_scores, in_encounter, _MATCH_THRESHOLD
 
 def _load(name): return cv2.imread(f"tests/fixtures/{name}")
+
+# --- in_encounter(): the CHEAP boolean the catch loop polls. Must agree with
+#     classify()'s ENCOUNTER decision but skip the MAP hue/sat work. ---
+@pytest.mark.parametrize("name", ["encounter.png", "encounter_dusk.png"])
+def test_in_encounter_true_for_encounter_fixtures(name):
+    assert in_encounter(_load(name)) is True
+
+@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "radar0.png", "radar1.png"])
+def test_in_encounter_false_for_map_fixtures(name):
+    assert in_encounter(_load(name)) is False
+
+def test_in_encounter_false_for_black_image():
+    assert in_encounter(np.zeros((2388, 1080, 3), np.uint8)) is False
 
 # --- ENCOUNTER: must hold across DIFFERENT backgrounds (the flicker regression) ---
 @pytest.mark.parametrize("name", ["encounter.png", "encounter_dusk.png"])

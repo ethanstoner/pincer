@@ -106,6 +106,15 @@ def encounter_scores(img: np.ndarray) -> list:
     return [_anchor_score(img, t, cxr, cyr, half) for t, cxr, cyr, half in _TEMPLATES]
 
 
+def in_encounter(img: np.ndarray) -> bool:
+    """Cheap boolean the catch loop POLLS: True iff both ENCOUNTER UI anchors
+    match above threshold. This is exactly classify()'s ENCOUNTER decision but
+    exposed on its own so the loop can spin on it without paying for the MAP
+    hue/sat work every poll. Ball throws are gated on this, so it requires BOTH
+    anchors (AND) -- a single false match can never green-light a throw."""
+    return all(s >= _MATCH_THRESHOLD for s in encounter_scores(img))
+
+
 def _region_hsv_mean(img, y0, y1, x0, x1):
     h, w = img.shape[:2]
     region = img[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]

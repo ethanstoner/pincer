@@ -30,3 +30,24 @@ def test_screencap_decodes_png_bytes():
         run.return_value = MagicMock(stdout=png)
         img = dev.screencap()
         assert img.shape == (4,4,3)
+
+def test_screencap_retries_on_truncated_png():
+    # Live "libpng error: PNG input buffer is incomplete" -> imdecode None.
+    # First read returns truncated bytes (decodes to None), second read is a
+    # valid PNG. screencap must retry and return the valid image.
+    truncated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8   # header only -> imdecode None
+    valid = cv2.imencode(".png", np.zeros((4,4,3), np.uint8))[1].tobytes()
+    dev = Device("SERIAL", "adb.exe")
+    with patch("src.device.subprocess.run") as run, patch("src.device.time.sleep"):
+        run.side_effect = [MagicMock(stdout=truncated), MagicMock(stdout=valid)]
+        img = dev.screencap()
+        assert img is not None
+        assert img.shape == (4,4,3)
+        assert run.call_count == 2   # proves it retried once
+
+def test_screencap_returns_none_if_all_retries_fail():
+    truncated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    dev = Device("SERIAL", "adb.exe")
+    with patch("src.device.subprocess.run") as run, patch("src.device.time.sleep"):
+        run.return_value = MagicMock(stdout=truncated)
+        assert dev.screencap() is None
