@@ -179,18 +179,26 @@ class CatchLoop:
                 self._sleep((300, 500))  # transient; wait, don't flee
 
     # --- throw loop (INV-1 lives here) ------------------------------------
-    def _run_throw_loop(self):
+    def _run_throw_loop(self, first_frame=None):
+        """Throw until the encounter resolves. `first_frame`, when given, is an
+        ALREADY-CONFIRMED encounter frame from _await_encounter -- we throw on it
+        immediately instead of paying another ~0.6s screencap, so the ball flies
+        the instant the berry/ball UI appears. INV-1 still holds: encounter_check
+        is re-verified on every frame (including first_frame) before any throw."""
         max_throws = self.config.timing["max_throws"]
         resolve_timeout_ms = self._timeout("post_throw_ms")
 
         throws = 0
+        img = first_frame
         while throws < max_throws:
-            img = self.device.screencap()
+            if img is None:
+                img = self.device.screencap()
             if img is None or not self.encounter_check(img):
                 return  # resolved (caught / fled) or the encounter is gone
 
             self._throw()  # SAFE: guarded by encounter_check(img) True just above
             throws += 1
+            img = None  # force a fresh screencap for the next iteration's re-check
 
             # Wait for the result: caught -> back to MAP; broke free -> still an
             # encounter once the shake animation ends. Poll instead of sleeping.
@@ -233,8 +241,10 @@ class CatchLoop:
                 self._recover()
                 return
 
-            self.labeler(img, target, self.config.dataset_dir)  # confirmed -> self-label
-            self._run_throw_loop()
+            # Throw at once on the confirmed frame; self-label AFTER so the PNG
+            # write never delays the ball.
+            self._run_throw_loop(first_frame=enc_img)
+            self.labeler(img, target, self.config.dataset_dir)
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter
