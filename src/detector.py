@@ -321,8 +321,14 @@ def _in_range(val, lo_ratio, hi_ratio, dim):
     return lo_ratio * dim <= val <= hi_ratio * dim
 
 
-def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
+def propose(img: np.ndarray, phone: Phone, exclude=None) -> Optional[Target]:
+    """Propose the best tap target. `exclude` is an optional list of
+    (x, y, radius) no-tap zones -- the catch loop blacklists spots whose tap
+    just yielded nothing/a panel (giant raid bosses on gyms, the walking buddy,
+    inert icons), so we pick the next-best candidate instead of re-tapping the
+    same object every tick."""
     height, width = img.shape[:2]
+    exclude = exclude or []
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     hue, sat = hsv[:, :, 0], hsv[:, :, 1]
@@ -404,6 +410,10 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
 
         # Reject the player avatar's own box (screen-center trainer model).
         if _in_range(cx, *AVATAR_EXCL_X, width) and _in_range(cy, *AVATAR_EXCL_Y, height):
+            continue
+
+        # Skip blacklisted no-tap zones (recent failed taps).
+        if any(math.hypot(cx - ex, cy - ey) <= er for ex, ey, er in exclude):
             continue
 
         dist = math.hypot(cx - avatar_x, cy - avatar_y)

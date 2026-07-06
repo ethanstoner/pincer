@@ -17,6 +17,8 @@ Safety contract (structural, not incidental):
     escape, not a ball throw) or presses back, then polls for MAP.
 """
 
+import inspect
+import math
 import random
 import time
 
@@ -40,6 +42,12 @@ class CatchLoop:
     _RECOVER_ATTEMPTS = 4
     _RECOVER_POLL_MS = 1500           # short per-attempt poll (PoGo close is ~instant)
     _BLIND_CLOSE_AFTER = 2            # attempts w/o a recognized X before blind-tapping the X spot
+    # Failed-tap blacklist: a spot whose tap yielded nothing / a panel is
+    # embargoed so the detector picks the NEXT-best candidate instead of
+    # re-tapping the same giant raid boss / walking buddy / inert icon every
+    # tick (live audit showed 4+ consecutive taps on one Groudon raid boss).
+    _FAIL_SPOT_TTL_S = 8.0
+    _FAIL_SPOT_RADIUS = 130
     _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
 
     def __init__(
@@ -69,6 +77,13 @@ class CatchLoop:
         self.encounter_check = encounter_check
         self.close_check = close_check
         self.clock = clock
+        self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
+        try:
+            self._detector_takes_exclude = (
+                "exclude" in inspect.signature(detector_fn).parameters
+            )
+        except (TypeError, ValueError):
+            self._detector_takes_exclude = False
 
     # --- small helpers -----------------------------------------------------
     def _sleep(self, ms_range):
@@ -268,7 +283,20 @@ class CatchLoop:
         state = self.classifier(img)
 
         if state == ScreenState.MAP:
-            target = self.detector_fn(img, self.phone)
+            now = self.clock()
+            self._fail_spots = [s for s in self._fail_spots if s[2] > now]
+            exclude = [(fx, fy, self._FAIL_SPOT_RADIUS) for fx, fy, _ in self._fail_spots]
+            if self._detector_takes_exclude:
+                target = self.detector_fn(img, self.phone, exclude=exclude)
+            else:
+                target = self.detector_fn(img, self.phone)
+                # Detector can't skip embargoed spots itself -> at least never
+                # RE-tap one (skip this tick; the map pans / the TTL expires).
+                if target is not None and any(
+                    math.hypot(target.x - fx, target.y - fy) <= self._FAIL_SPOT_RADIUS
+                    for fx, fy, _ in self._fail_spots
+                ):
+                    target = None
             if target is None:
                 self._sleep(self.config.timing["map_scan_ms"])
                 return
@@ -284,6 +312,10 @@ class CatchLoop:
                 # Tap did not open an encounter -> back out on the frame we
                 # already have (no extra screencap). INV-1: no throw. The audit
                 # gets the RESULT frame too: "clicked this -> got this panel".
+                # Embargo the spot so the next ticks try OTHER candidates.
+                self._fail_spots.append(
+                    (target.x, target.y, self.clock() + self._FAIL_SPOT_TTL_S)
+                )
                 self.click_logger(img, target, self._bail_outcome(bail_img),
                                   self.config.dataset_dir, result_img=bail_img)
                 self._recover(img=bail_img)

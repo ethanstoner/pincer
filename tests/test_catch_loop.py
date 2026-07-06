@@ -258,6 +258,59 @@ def test_click_logger_records_nothing_outcome_on_empty_tap():
     assert calls["clicks"] == [(target, "nothing")]
 
 
+def test_failed_tap_spot_is_blacklisted_and_not_retapped():
+    # tap yields nothing -> the spot is embargoed: a plain detector (no exclude
+    # support) proposing the SAME spot next tick must NOT be tapped again.
+    classifier = Scripted([ScreenState.MAP])          # sticky map (empty tap)
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target
+    )
+    loop.tick()                       # tap -> still MAP -> blacklist the spot
+    taps_after_first = len(device.taps)
+    assert taps_after_first == 1
+    loop.tick()                       # same proposal -> embargoed -> no tap
+    assert len(device.taps) == taps_after_first
+
+
+def test_exclude_zones_passed_to_exclude_aware_detector():
+    # An exclude-aware detector receives the embargoed spot and can pick the
+    # next-best candidate -- keeps catching while a raid boss is blacklisted.
+    classifier = Scripted([ScreenState.MAP])
+    bad = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    good = Target(x=800, y=1600, bbox=(780, 1580, 40, 40))
+    seen_excludes = []
+
+    def detector(img, phone, exclude=None):
+        seen_excludes.append(list(exclude or []))
+        for t in (bad, good):
+            if not any((t.x - ex) ** 2 + (t.y - ey) ** 2 <= er ** 2
+                       for ex, ey, er in (exclude or [])):
+                return t
+        return None
+
+    loop, device, _, _ = make_loop(Scripted([ScreenState.MAP]), Scripted([False]),
+                                   detector_fn=detector)
+    loop.tick()                                    # taps bad -> blacklists it
+    loop.tick()                                    # detector must get the zone
+    assert seen_excludes[0] == []
+    assert len(seen_excludes[1]) == 1              # embargo forwarded
+    assert any(abs(tx - good.x) <= 10 for tx, ty in device.taps[1:])  # next-best tapped
+
+
+def test_propose_exclude_zone_yields_a_different_target():
+    from src.config import Phone
+    import cv2
+    from src.detector import propose
+    phone = Phone(serial="X", width=1080, height=2388)
+    img = cv2.imread("tests/fixtures/map.png")
+    t1 = propose(img, phone)
+    assert t1 is not None
+    t2 = propose(img, phone, exclude=[(t1.x, t1.y, 60)])
+    if t2 is not None:  # another candidate exists -> must be a different spot
+        assert (abs(t2.x - t1.x) > 60) or (abs(t2.y - t1.y) > 60)
+
+
 def test_recover_uses_provided_frame_without_extra_screencap():
     # tick already has the frame in hand -> _recover's FIRST attempt must act on
     # it directly (tap the X) instead of paying another ~0.6s screencap.
