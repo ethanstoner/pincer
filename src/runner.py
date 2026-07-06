@@ -89,6 +89,8 @@ def _build_loops(config, phones, dry_run):
         device = Device(phone.serial, config.adb_path)
         if dry_run:
             device = DryRunDevice(device)
+        else:
+            device.set_stay_awake()  # keep the display on for the whole run
         kwargs = {"detector_fn": detector_fn} if detector_fn else {}
         loops.append(CatchLoop(device, config, phone, **kwargs))
     return loops

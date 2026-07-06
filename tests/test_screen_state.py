@@ -3,8 +3,16 @@ import numpy as np
 import pytest
 from src.screen_state import (
     classify, ScreenState, encounter_scores, in_encounter, _MATCH_THRESHOLD,
-    has_close_button, close_button_score,
+    has_close_button, close_button_score, is_screen_off,
 )
+
+
+def test_is_screen_off_true_on_black():
+    assert is_screen_off(np.zeros((2388, 1080, 3), np.uint8)) is True
+
+@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png", "gym.png", "pokestop.png"])
+def test_is_screen_off_false_on_real_screens(name):
+    assert is_screen_off(cv2.imread(f"tests/fixtures/{name}")) is False
 
 def _load(name): return cv2.imread(f"tests/fixtures/{name}")
 

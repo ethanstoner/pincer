@@ -99,3 +99,11 @@ class Device:
 
     def key_back(self):
         self._run("shell", "input", "keyevent", "4")
+
+    def wake(self):
+        """Turn the display back on (screencap returns black when it's asleep)."""
+        self._run("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+
+    def set_stay_awake(self):
+        """Keep the display on while powered (USB), so it never sleeps mid-run."""
+        self._run("shell", "svc", "power", "stayon", "true")

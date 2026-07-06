@@ -9,19 +9,22 @@ from src.detector import Target
 from src.screen_state import ScreenState
 
 
-DUMMY_IMG = np.zeros((4, 4, 3), np.uint8)
+DUMMY_IMG = np.full((4, 4, 3), 40, np.uint8)   # non-black -> is_screen_off() False
+BLACK_IMG = np.zeros((4, 4, 3), np.uint8)       # a display-asleep (black) frame
 
 
 class FakeDevice:
-    def __init__(self):
+    def __init__(self, img=None):
         self.taps = []
         self.swipes = []
         self.key_backs = []
+        self.wakes = 0
         self.screencaps = 0
+        self._img = DUMMY_IMG if img is None else img
 
     def screencap(self):
         self.screencaps += 1
-        return DUMMY_IMG
+        return self._img
 
     def tap(self, x, y):
         self.taps.append((x, y))
@@ -31,6 +34,9 @@ class FakeDevice:
 
     def key_back(self):
         self.key_backs.append(True)
+
+    def wake(self):
+        self.wakes += 1
 
 
 class Scripted:
@@ -194,6 +200,20 @@ def test_mistap_gym_never_throws_and_recovers_via_close_button():
     assert device.swipes == []                          # SAFETY: never threw
     assert calls["labels"] == []                        # and never self-labeled
     assert loop._pt("close_button") in device.taps      # recovered by tapping the X
+
+
+def test_tick_wakes_on_black_screen_instead_of_recovering():
+    # display asleep -> screencap black -> wake it, do NOT throw/tap/recover/label
+    device = FakeDevice(img=BLACK_IMG)
+    loop, device, calls, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]), device=device
+    )
+    loop.tick()
+    assert device.wakes >= 1
+    assert device.swipes == []
+    assert device.taps == []
+    assert device.key_backs == []
+    assert calls["labels"] == []
 
 
 def test_no_target_no_tap_no_swipe_no_label():

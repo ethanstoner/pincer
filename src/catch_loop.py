@@ -27,6 +27,7 @@ from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
 from src.screen_state import has_close_button as _has_close_button
 from src.screen_state import in_encounter as _in_encounter
+from src.screen_state import is_screen_off as _is_screen_off
 
 
 class CatchLoop:
@@ -219,6 +220,14 @@ class CatchLoop:
         img = self.device.screencap()
         if img is None:
             self._sleep(self.config.timing["map_scan_ms"])
+            return
+
+        if _is_screen_off(img):
+            # Display slept -> screencap is black. Wake it instead of spinning in
+            # recovery on an all-UNKNOWN screen. INV-1/2 unaffected (no throw/tap
+            # into game UI; only a WAKEUP keyevent).
+            self.device.wake()
+            self._sleep((400, 700))
             return
 
         state = self.classifier(img)

@@ -155,6 +155,17 @@ def has_close_button(img: np.ndarray) -> bool:
     return close_button_score(img) >= _CLOSE_THRESHOLD
 
 
+def is_screen_off(img: np.ndarray) -> bool:
+    """True if the frame is a blank/near-black display-off screen.
+
+    When the phone display sleeps, `screencap` returns an all-black image, which
+    otherwise classifies as UNKNOWN and makes the loop spin uselessly in recovery.
+    A slept screen is ~uniformly black (mean intensity ~0); a genuine dark night
+    scene still has bright UI (ball/berry icons, HUD), so its mean is far higher.
+    """
+    return float(img.mean()) < 6.0
+
+
 def _region_hsv_mean(img, y0, y1, x0, x1):
     h, w = img.shape[:2]
     region = img[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]
