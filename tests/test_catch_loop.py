@@ -232,6 +232,32 @@ def test_recover_method_directly_never_swipes_for_all_non_encounter_states():
         assert device.swipes == []
 
 
+def test_recover_terminates_on_stuck_timeout_without_hanging_or_throwing():
+    # classifier NEVER returns MAP -> exercises _poll_until_map's
+    # elapsed >= stuck_timeout_ms -> return False branch, and the resulting
+    # second key_back in the UNKNOWN recover branch. Proves "nothing hangs".
+    class AlwaysUnknown:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, img):
+            self.calls += 1
+            return ScreenState.UNKNOWN
+
+    classifier = AlwaysUnknown()
+    loop, device, calls_holder, _ = make_loop(classifier)
+    # small stuck_timeout so the bounded poll loop expires fast
+    loop.config.timing["stuck_timeout_ms"] = 15
+
+    loop.tick()  # UNKNOWN -> _recover; must TERMINATE (no hang)
+
+    # recover never throws, even when it times out
+    assert device.swipes == []
+    assert calls_holder["labels"] == []
+    # UNKNOWN branch: key_back once, then (poll never sees MAP -> False) key_back again
+    assert device.key_backs == [True, True]
+
+
 def test_run_loop_calls_tick_until_stop_event_set():
     classifier = ScriptedClassifier([ScreenState.MAP])
     detector_fn = lambda img, phone: None
