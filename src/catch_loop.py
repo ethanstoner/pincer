@@ -34,6 +34,8 @@ class CatchLoop:
     _SWIPE_JITTER_PX = 5
     _THROW_DURATION_MS_RANGE = (120, 180)
     _ERROR_BACKOFF_MS = (1000, 1000)  # brief pause after a crashed tick
+    _RECOVER_ATTEMPTS = 4
+    _RECOVER_POLL_MS = 1500           # short per-attempt poll (PoGo close is ~instant)
 
     def __init__(
         self,
@@ -108,26 +110,29 @@ class CatchLoop:
             self.sleep_fn(interval_ms / 1000.0)
             elapsed += interval_ms
 
-    def _poll_until_map(self):
-        _, ok = self._poll(
-            lambda im: self.classifier(im) == ScreenState.MAP,
-            self.config.timing["stuck_timeout_ms"],
-        )
-        return ok
-
     # --- recovery (NEVER throws) ------------------------------------------
-    def _recover(self, state):
-        """Bring the phone back to a known MAP state. INV-2: never throws."""
-        if state == ScreenState.ENCOUNTER:
-            self.device.tap(*self._pt("flee_button"))
-            self._poll_until_map()
-        elif state in (ScreenState.POKESTOP, ScreenState.GYM):
-            self.device.key_back()
-            self._poll_until_map()
-        else:  # UNKNOWN / any non-confirmed state
-            self.device.key_back()
-            if not self._poll_until_map():
-                self.device.key_back()
+    def _recover(self, state=None):
+        """Close whatever non-map screen we're on and get back to MAP.
+
+        the game IGNORES the Android back button, so a stuck gym / PokeStop is
+        closed by tapping the on-screen X (bottom-center) -- NOT key_back. We tap
+        close, briefly poll for MAP, and fall back to key_back. Fast retries
+        instead of one long stuck-timeout poll, so a mis-tap costs ~1s, not 15s.
+        INV-2: never throws (only taps close/back).
+        """
+        for _ in range(self._RECOVER_ATTEMPTS):
+            img = self.device.screencap()
+            if img is not None and self.classifier(img) == ScreenState.MAP:
+                return  # already back on the map (don't tap close over the map)
+            self.device.tap(*self._pt("close_button"))
+            _, ok = self._poll(
+                lambda im: self.classifier(im) == ScreenState.MAP,
+                self._RECOVER_POLL_MS,
+            )
+            if ok:
+                return
+            self.device.key_back()  # fallback for panels without a bottom-center X
+            self._sleep((150, 300))
 
     # --- throw loop (INV-1 lives here) ------------------------------------
     def _run_throw_loop(self):

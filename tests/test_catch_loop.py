@@ -57,6 +57,7 @@ def make_config():
             "throw_start": [0.5, 0.83752],
             "throw_end": [0.5, 0.35595],
             "flee_button": [0.04815, 0.06072],
+            "close_button": [0.498, 0.9527],
         },
         timing={
             "encounter_load_ms": [1, 2],   # -> encounter poll timeout ~2ms
@@ -127,9 +128,11 @@ def test_caught_path_taps_once_labels_once_throws_and_no_flee_or_recover():
 
 
 def test_wrong_target_never_throws_and_recovers():
-    # tap did NOT open an encounter: in_encounter stays False -> encounter poll
-    # times out -> _recover -> return. SAFETY: no throw ever happens.
-    classifier = Scripted([ScreenState.MAP])   # still MAP after the failed tap
+    # tap opened a non-encounter (e.g. a gym): in_encounter never confirmed ->
+    # encounter poll times out -> _recover taps the close X. SAFETY: no throw.
+    classifier = Scripted(
+        [ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP]
+    )
     encounter_check = Scripted([False])        # encounter NEVER confirmed
     target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
     detector_fn = lambda img, phone: target
@@ -140,10 +143,9 @@ def test_wrong_target_never_throws_and_recovers():
 
     loop.tick()
 
-    assert len(device.taps) == 1     # the detect tap happened
-    assert device.swipes == []       # but NO throw
+    assert device.swipes == []       # NO throw
     assert calls["labels"] == []     # and NO self-label
-    assert len(device.key_backs) >= 1  # a recover occurred
+    assert loop._pt("close_button") in device.taps  # recovered by tapping the X
 
 
 def test_no_target_no_tap_no_swipe_no_label():
@@ -180,31 +182,31 @@ def test_stubborn_pokemon_hits_throw_cap_then_yields_without_fleeing():
 
 
 def test_recover_on_pokestop_then_map():
-    classifier = Scripted([ScreenState.POKESTOP, ScreenState.MAP])
+    classifier = Scripted([ScreenState.POKESTOP, ScreenState.POKESTOP, ScreenState.MAP])
     encounter_check = Scripted([False])
     loop, device, calls, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     assert device.swipes == []
-    assert len(device.key_backs) >= 1
+    assert loop._pt("close_button") in device.taps   # tapped the X, not just back
     assert calls["labels"] == []
 
 
 def test_recover_on_gym_then_map():
-    classifier = Scripted([ScreenState.GYM, ScreenState.MAP])
+    classifier = Scripted([ScreenState.GYM, ScreenState.GYM, ScreenState.MAP])
     encounter_check = Scripted([False])
     loop, device, calls, _ = make_loop(classifier, encounter_check)
 
     loop.tick()
 
     assert device.swipes == []
-    assert len(device.key_backs) >= 1
+    assert loop._pt("close_button") in device.taps   # tapped the X, not just back
     assert calls["labels"] == []
 
 
 def test_recover_never_throws_on_unknown():
-    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP])
     encounter_check = Scripted([False])
     loop, device, calls, _ = make_loop(classifier, encounter_check)
 
@@ -216,7 +218,7 @@ def test_recover_never_throws_on_unknown():
 
 def test_recover_method_directly_never_swipes_for_all_non_encounter_states():
     for state in (ScreenState.ENCOUNTER, ScreenState.UNKNOWN, ScreenState.POKESTOP, ScreenState.GYM):
-        classifier = Scripted([ScreenState.MAP])   # _poll_until_map resolves fast
+        classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])  # not-map -> close -> map
         encounter_check = Scripted([False])
         loop, device, _, _ = make_loop(classifier, encounter_check)
         loop._recover(state)
@@ -224,18 +226,18 @@ def test_recover_method_directly_never_swipes_for_all_non_encounter_states():
 
 
 def test_recover_terminates_on_stuck_timeout_without_hanging_or_throwing():
-    # classifier NEVER returns MAP -> exercises the poll stuck-timeout expiry
-    # branch and the resulting second key_back in the UNKNOWN recover branch.
+    # classifier NEVER returns MAP -> recover exhausts its attempts (tap close +
+    # key_back fallback each time) and RETURNS without hanging or throwing.
     classifier = Scripted([ScreenState.UNKNOWN])   # sticky UNKNOWN forever
     encounter_check = Scripted([False])
     loop, device, calls, _ = make_loop(classifier, encounter_check)
-    loop.config.timing["stuck_timeout_ms"] = 15    # small so the poll expires fast
 
     loop.tick()  # UNKNOWN -> _recover; must TERMINATE (no hang)
 
     assert device.swipes == []          # recover never throws, even on timeout
     assert calls["labels"] == []
-    assert device.key_backs == [True, True]  # entry back + post-timeout back
+    assert loop._pt("close_button") in device.taps  # tried the X
+    assert len(device.key_backs) >= 1               # and the back fallback
 
 
 def test_run_loop_calls_tick_until_stop_event_set():
