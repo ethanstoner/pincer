@@ -97,6 +97,8 @@ def _make_detector_fn(config):
         from src.detector_yolo import YoloDetector
 
         yolo = YoloDetector(config.yolo_model_path)
+        if not config.cv_fallback:
+            return yolo.propose  # YOLO-only: never a junk proposal
         empty_streak = {}  # per-phone consecutive YOLO-empty scans
 
         def hybrid(img, phone, exclude=None):
@@ -118,7 +120,7 @@ def _make_detector_fn(config):
     return None  # None -> CatchLoop uses its default CV propose
 
 
-def _build_loops(config, phones, dry_run, monitor_server=None):
+def _build_loops(config, phones, dry_run, monitor_server=None, reviewer=None):
     detector_fn = _make_detector_fn(config)
     loops = []
     for phone in phones:
@@ -130,6 +132,8 @@ def _build_loops(config, phones, dry_run, monitor_server=None):
         kwargs = {"detector_fn": detector_fn} if detector_fn else {}
         if monitor_server is not None:
             kwargs["monitor"] = monitor_server.register(phone.serial)
+        if reviewer is not None:
+            kwargs["reviewer"] = reviewer
         loops.append(CatchLoop(device, config, phone, **kwargs))
     return loops
 
@@ -155,15 +159,18 @@ def main(argv):
     clear_click_audit(config.dataset_dir)  # fresh per-run click review folder
 
     monitor_server = None
+    reviewer = None
     if not args.once:
         from src.monitor import MonitorServer
-        monitor_server = MonitorServer(port=8750)
+        from src.review import ReviewStore
+        reviewer = ReviewStore(config.dataset_dir)
+        monitor_server = MonitorServer(port=8750, review_store=reviewer)
 
-    loops = _build_loops(config, phones, args.dry_run, monitor_server)
+    loops = _build_loops(config, phones, args.dry_run, monitor_server, reviewer)
 
     if monitor_server is not None:
         monitor_server.start()
-        print("live monitor UI: http://127.0.0.1:8750/")
+        print("live monitor UI: http://127.0.0.1:8750/  (click review: /review)")
 
     if args.once:
         for loop in loops:

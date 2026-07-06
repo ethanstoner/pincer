@@ -4,6 +4,7 @@
   "detector": "yolo",
   "yolo_model_path": "training/runs/pokemon/weights/best.pt",
   "stream": true,
+  "cv_fallback": false,
   "phones": [
     { "serial": "DEVICE_SERIAL_A", "width": 1080, "height": 2388 },
     { "serial": "DEVICE_SERIAL_B", "width": 1080, "height": 2388 }

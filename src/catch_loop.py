@@ -111,6 +111,7 @@ class CatchLoop:
         ok_finder=_find_ok_button,
         clock=time.monotonic,
         monitor=None,
+        reviewer=None,
     ):
         self.device = device
         self.config = config
@@ -128,6 +129,7 @@ class CatchLoop:
         self.ok_finder = ok_finder
         self.clock = clock
         self.monitor = monitor  # live-UI publisher (PhoneMonitor) or None
+        self.reviewer = reviewer  # ReviewStore (vote-on-clicks UI) or None
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
         self._last_target_t = None  # last time the detector found anything
@@ -507,6 +509,8 @@ class CatchLoop:
                     self.neg_labeler(img, target, self.config.dataset_dir)
                 self.click_logger(img, target, outcome,
                                   self.config.dataset_dir, result_img=bail_img)
+                if self.reviewer is not None:
+                    self.reviewer.record(img, target, outcome, bail_img)
                 self._recover(img=bail_img)
                 return
 
@@ -516,6 +520,8 @@ class CatchLoop:
             self.labeler(img, target, self.config.dataset_dir)
             self.click_logger(img, target, "encounter", self.config.dataset_dir,
                               result_img=enc_img)
+            if self.reviewer is not None:
+                self.reviewer.record(img, target, "encounter", enc_img)
             # The catch took seconds: restart the camera-pan clock, else the
             # first briefly-empty rescan pans even with spawns still visible.
             self._last_target_t = self.clock()

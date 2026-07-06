@@ -19,6 +19,7 @@ class Config:
     detector: str = "cv"            # "cv" (classical) or "yolo"
     yolo_model_path: str = ""       # path to trained best.pt / .onnx when detector == "yolo"
     stream: bool = False            # continuous screenrecord frame stream (needs `av`)
+    cv_fallback: bool = True        # let classical CV propose when YOLO is blind
 
 
 def load_config(path):
@@ -34,6 +35,7 @@ def load_config(path):
         detector=data.get("detector", "cv"),
         yolo_model_path=data.get("yolo_model_path", ""),
         stream=data.get("stream", False),
+        cv_fallback=data.get("cv_fallback", True),
     )
 
 

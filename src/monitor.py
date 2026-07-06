@@ -70,6 +70,70 @@ setInterval(refresh, 600); refresh();
 </body></html>"""
 
 
+_REVIEW_PAGE = """<!DOCTYPE html>
+<html><head><title>PoGo Catcher — Click Review</title>
+<style>
+  body { background:#111; color:#ddd; font-family:Segoe UI,Arial,sans-serif;
+         margin:0; padding:16px; }
+  h1 { font-size:18px; margin:0 0 4px; color:#7fd3a0; }
+  a { color:#9ecbff; }
+  .grid { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
+  .card { background:#1b1b1b; border:1px solid #333; border-radius:10px;
+          padding:8px; width:300px; }
+  .card img { width:100%; border-radius:6px; background:#000; }
+  .meta { font-size:11px; color:#999; margin:6px 0; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px;
+           font-size:11px; font-weight:bold; }
+  .b-encounter { background:#1c5c34; } .b-panel { background:#7a2b1e; }
+  .b-nothing { background:#5c5320; } .b-timeout { background:#444; }
+  button { border:0; border-radius:6px; padding:6px 12px; margin:2px;
+           cursor:pointer; font-size:12px; color:#fff; }
+  .good { background:#227a46; } .bad { background:#a33; }
+  .reason { background:#444; }
+  .voted { opacity:0.45; }
+</style></head>
+<body>
+<h1>Click review</h1>
+<div><a href="/">&larr; live monitor</a> — vote each click; bad votes with an
+object reason become avoid-training labels, good votes on misses become
+pokemon labels.</div>
+<div class="grid" id="grid"></div>
+<script>
+const REASONS = ["blank/nothing","gym","gym pokemon","dynamax","raid icon",
+                 "pokestop","rocket","ui element","other"];
+async function load() {
+  const r = await fetch('/review/list'); const items = await r.json();
+  const grid = document.getElementById('grid'); grid.innerHTML = '';
+  for (const it of items) {
+    const card = document.createElement('div');
+    card.className = 'card' + (it.vote ? ' voted' : '');
+    let controls = '';
+    if (!it.vote) {
+      controls = `<button class="good" onclick="vote('${it.id}','good',null)">Good</button>
+        <button class="bad" onclick="showReasons('${it.id}')">Bad…</button>
+        <span id="rs-${it.id}" style="display:none">` +
+        REASONS.map(x => `<button class="reason" onclick="vote('${it.id}','bad','${x}')">${x}</button>`).join('') +
+        `</span>`;
+    } else {
+      controls = `<b>${it.vote}</b>${it.reason ? ' — ' + it.reason : ''}`;
+    }
+    card.innerHTML = `<img src="/review/img/${it.id}.jpg" loading="lazy">
+      <div class="meta"><span class="badge b-${it.outcome}">${it.outcome}</span>
+      &nbsp;detector: ${it.src} &nbsp;${it.id}</div>${controls}`;
+    grid.appendChild(card);
+  }
+}
+function showReasons(id) { document.getElementById('rs-' + id).style.display = 'inline'; }
+async function vote(id, v, reason) {
+  await fetch('/review/vote', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, vote: v, reason})});
+  load();
+}
+load(); setInterval(load, 15000);
+</script>
+</body></html>"""
+
+
 class PhoneMonitor:
     """Shared state for one phone: the loop publishes, the server reads."""
 
@@ -142,9 +206,10 @@ class PhoneMonitor:
 
 
 class MonitorServer:
-    def __init__(self, port=8750):
+    def __init__(self, port=8750, review_store=None):
         self.port = port
         self.phones = {}  # serial -> PhoneMonitor
+        self.review = review_store
 
     def register(self, serial):
         pm = PhoneMonitor(serial)
@@ -153,6 +218,7 @@ class MonitorServer:
 
     def start(self):
         phones = self.phones
+        review = self.review
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):  # silence request spam
@@ -169,6 +235,21 @@ class MonitorServer:
                 path = self.path.split("?")[0]
                 if path == "/":
                     self._send(200, "text/html; charset=utf-8", _PAGE.encode())
+                elif path == "/review" and review is not None:
+                    self._send(200, "text/html; charset=utf-8",
+                               _REVIEW_PAGE.encode())
+                elif path == "/review/list" and review is not None:
+                    self._send(200, "application/json",
+                               json.dumps(review.recent()).encode())
+                elif (path.startswith("/review/img/") and path.endswith(".jpg")
+                        and review is not None):
+                    rid = path[len("/review/img/"):-len(".jpg")]
+                    p = review.image_path(rid)
+                    try:
+                        with open(p, "rb") as f:
+                            self._send(200, "image/jpeg", f.read())
+                    except (OSError, TypeError):
+                        self._send(404, "text/plain", b"gone")
                 elif path == "/status":
                     body = json.dumps({s: p.status() for s, p in phones.items()})
                     self._send(200, "application/json", body.encode())
@@ -210,6 +291,17 @@ class MonitorServer:
                     self._send(404, "text/plain", b"not found")
 
             def do_POST(self):
+                if self.path == "/review/vote" and review is not None:
+                    try:
+                        n = int(self.headers.get("Content-Length", 0))
+                        body = json.loads(self.rfile.read(n))
+                        ok = review.vote(body["id"], body["vote"],
+                                         body.get("reason"))
+                        self._send(200 if ok else 404, "text/plain",
+                                   b"ok" if ok else b"unknown id")
+                    except (ValueError, KeyError):
+                        self._send(400, "text/plain", b"bad request")
+                    return
                 parts = self.path.strip("/").split("/")
                 if len(parts) == 3 and parts[0] == "control":
                     pm = phones.get(parts[1])
