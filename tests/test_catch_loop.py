@@ -82,9 +82,11 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
 
     labeler = labeler or default_labeler
     sleeps = []
+    clock = {"t": 0.0}
 
     def sleep_fn(seconds):
         sleeps.append(seconds)
+        clock["t"] += seconds        # fake clock advances with each sleep
 
     loop = CatchLoop(
         device=device,
@@ -96,6 +98,7 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
         sleep_fn=sleep_fn,
         rng=random.Random(42),
         encounter_check=encounter_check,
+        clock=lambda: clock["t"],
     )
     return loop, device, calls, sleeps
 

@@ -48,6 +48,7 @@ class CatchLoop:
         sleep_fn=time.sleep,
         rng=None,
         encounter_check=_in_encounter,
+        clock=time.monotonic,
     ):
         self.device = device
         self.config = config
@@ -58,6 +59,7 @@ class CatchLoop:
         self.sleep_fn = sleep_fn
         self.rng = rng if rng is not None else random.Random()
         self.encounter_check = encounter_check
+        self.clock = clock
 
     # --- small helpers -----------------------------------------------------
     def _sleep(self, ms_range):
@@ -89,15 +91,18 @@ class CatchLoop:
 
     # --- polling core ------------------------------------------------------
     def _poll(self, predicate, timeout_ms, interval_ms=None):
-        """Poll until predicate(screencap()) is True or timeout_ms elapses.
+        """Poll until predicate(screencap()) is True or timeout_ms of REAL time
+        elapses.
 
         Returns (img, ok). `img` is the frame that satisfied the predicate, or
-        the last non-None frame seen on timeout. Elapsed time is counted in
-        fixed interval steps so a no-op sleep_fn still terminates deterministically.
-        Screencap None (truncated PNG) is skipped -- never fed to the predicate.
+        the last non-None frame seen on timeout. Elapsed is measured on the
+        wall-clock (self.clock) -- NOT by counting fixed interval steps -- because
+        a single screencap can take ~0.6s, far longer than interval_ms; counting
+        steps made a 1.9s timeout run ~16s of real time. Screencap None (truncated
+        pull) is skipped -- never fed to the predicate.
         """
         interval_ms = interval_ms if interval_ms is not None else self._POLL_INTERVAL_MS
-        elapsed = 0
+        start = self.clock()
         last_img = None
         while True:
             img = self.device.screencap()
@@ -105,10 +110,9 @@ class CatchLoop:
                 last_img = img
                 if predicate(img):
                     return img, True
-            if elapsed >= timeout_ms:
+            if (self.clock() - start) * 1000.0 >= timeout_ms:
                 return last_img, False
             self.sleep_fn(interval_ms / 1000.0)
-            elapsed += interval_ms
 
     # --- recovery (NEVER throws) ------------------------------------------
     def _recover(self, state=None):
