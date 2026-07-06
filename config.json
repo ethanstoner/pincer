@@ -1,6 +1,8 @@
 {
   "adb_path": "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe\\platform-tools\\adb.exe",
   "dataset_dir": "dataset",
+  "detector": "yolo",
+  "yolo_model_path": "training/runs/pokemon/weights/best.pt",
   "phones": [
     { "serial": "DEVICE_SERIAL_A", "width": 1080, "height": 2388 },
     { "serial": "DEVICE_SERIAL_B", "width": 1080, "height": 2388 }
