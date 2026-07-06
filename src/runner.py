@@ -85,10 +85,26 @@ def clear_click_audit(dataset_dir):
 def _make_detector_fn(config):
     """Return the detector callable (img, phone) -> Optional[Target]. Defaults to
     the classical CV detector; uses the trained YOLO model when config selects it.
-    One model instance is shared across phones."""
+    One model instance is shared across phones.
+
+    YOLO runs HYBRID: when the model sees nothing on a map frame (its recall
+    still trails in palettes it has less training data for -- live: blind to
+    small day spawns), the classical CV detector takes a second look with all
+    its junk rejectors. YOLO's precision when it fires, CV's coverage when
+    it is blind; bad CV picks stay bounded by the blacklist + audit."""
     if config.detector == "yolo" and config.yolo_model_path:
+        from src.detector import propose as _cv_propose
         from src.detector_yolo import YoloDetector
-        return YoloDetector(config.yolo_model_path).propose
+
+        yolo = YoloDetector(config.yolo_model_path)
+
+        def hybrid(img, phone, exclude=None):
+            target = yolo.propose(img, phone)
+            if target is not None:
+                return target
+            return _cv_propose(img, phone, exclude=exclude)
+
+        return hybrid
     return None  # None -> CatchLoop uses its default CV propose
 
 
