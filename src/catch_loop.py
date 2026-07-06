@@ -67,8 +67,11 @@ class CatchLoop:
     _PAN_BAND = (0.35, 0.78, 0.08, 0.92)   # (y0r, y1r, x0r, x1r) HUD-free band
     _PAN_MIN_SPEED = 12.0         # px/s -- below this, don't bother leading
     _PAN_MAX_SPEED = 320.0        # px/s -- above this, correlation is garbage
-    _PAN_MIN_RESPONSE = 0.10      # phaseCorrelate confidence floor
-    _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
+    _PAN_MIN_RESPONSE = 0.03      # confidence floor: feature-poor day grass
+                                  # correlates weakly (<0.1) yet the shift is
+                                  # real; the speed window bounds bad leads
+    _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
+                                      # (1.2s misfiled slow day encounter loads as 'nothing')
 
     def __init__(
         self,
