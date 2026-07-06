@@ -10,4 +10,4 @@ experiments/
 training/runs/
 training/yolo_data/
 training/_dataset.yaml
-yolo11n.pt
+yolo*.pt
