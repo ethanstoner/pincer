@@ -2,26 +2,44 @@ import numpy as np, cv2
 from unittest.mock import patch, MagicMock
 from src.device import Device
 
-def test_tap_builds_correct_adb_command():
+def _persistent_shell_mock():
+    """Popen mock for the persistent input shell: alive, with a writable stdin."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    return proc
+
+def test_tap_writes_input_command_to_persistent_shell():
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run:
+    with patch("src.device.subprocess.Popen") as Popen:
+        Popen.return_value = _persistent_shell_mock()
         dev.tap(540, 2124)
-        args = run.call_args[0][0]
-        assert args == ["adb.exe","-s","SERIAL","shell","input","tap","540","2124"]
+        assert Popen.call_args[0][0] == ["adb.exe", "-s", "SERIAL", "shell"]
+        Popen.return_value.stdin.write.assert_called_once_with("input tap 540 2124\n")
 
-def test_swipe_builds_correct_adb_command():
+def test_swipe_writes_input_command_to_persistent_shell():
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run:
-        dev.swipe(540,2000,540,850,150)
-        args = run.call_args[0][0]
-        assert args == ["adb.exe","-s","SERIAL","shell","input","swipe","540","2000","540","850","150"]
+    with patch("src.device.subprocess.Popen") as Popen:
+        Popen.return_value = _persistent_shell_mock()
+        dev.swipe(540, 2000, 540, 850, 150)
+        Popen.return_value.stdin.write.assert_called_once_with("input swipe 540 2000 540 850 150\n")
 
-def test_key_back_builds_correct_adb_command():
+def test_key_back_writes_input_command_to_persistent_shell():
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run:
+    with patch("src.device.subprocess.Popen") as Popen:
+        Popen.return_value = _persistent_shell_mock()
         dev.key_back()
-        args = run.call_args[0][0]
-        assert args == ["adb.exe","-s","SERIAL","shell","input","keyevent","4"]
+        Popen.return_value.stdin.write.assert_called_once_with("input keyevent 4\n")
+
+def test_input_shell_respawns_after_dead_process_and_reuses_when_alive():
+    dev = Device("SERIAL", "adb.exe")
+    with patch("src.device.subprocess.Popen") as Popen:
+        Popen.return_value = _persistent_shell_mock()
+        dev.tap(1, 2)
+        dev.tap(3, 4)                      # alive -> same shell reused
+        assert Popen.call_count == 1
+        Popen.return_value.poll.return_value = 1   # shell died
+        dev.tap(5, 6)                      # -> respawn
+        assert Popen.call_count == 2
 
 def test_decode_raw_parses_rgba_with_16byte_header():
     import struct

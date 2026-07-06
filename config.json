@@ -3,6 +3,7 @@
   "dataset_dir": "dataset",
   "detector": "yolo",
   "yolo_model_path": "training/runs/pokemon/weights/best.pt",
+  "stream": true,
   "phones": [
     { "serial": "DEVICE_SERIAL_A", "width": 1080, "height": 2388 },
     { "serial": "DEVICE_SERIAL_B", "width": 1080, "height": 2388 }
@@ -17,7 +18,7 @@
   "timing": {
     "encounter_load_ms": [1500, 5000],
     "post_throw_ms":     [1800, 2600],
-    "map_scan_ms":       [100, 250],
+    "map_scan_ms":       [40, 120],
     "stuck_timeout_ms":  15000,
     "max_throws": 12
   }

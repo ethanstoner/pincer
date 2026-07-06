@@ -18,6 +18,7 @@ class Config:
     timing: dict
     detector: str = "cv"            # "cv" (classical) or "yolo"
     yolo_model_path: str = ""       # path to trained best.pt / .onnx when detector == "yolo"
+    stream: bool = False            # continuous screenrecord frame stream (needs `av`)
 
 
 def load_config(path):
@@ -32,6 +33,7 @@ def load_config(path):
         timing=data["timing"],
         detector=data.get("detector", "cv"),
         yolo_model_path=data.get("yolo_model_path", ""),
+        stream=data.get("stream", False),
     )
 
 

@@ -108,6 +108,8 @@ class CatchLoop:
         self.clock = clock
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
+        # Streamed frames are fresher than pulled ones -> shorter tap lead.
+        self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
             self._detector_takes_exclude = (
                 "exclude" in inspect.signature(detector_fn).parameters
@@ -230,7 +232,7 @@ class CatchLoop:
                 speed = math.hypot(vx, vy)
                 if (response >= self._PAN_MIN_RESPONSE
                         and self._PAN_MIN_SPEED < speed < self._PAN_MAX_SPEED):
-                    lead = (vx * self._TAP_LEAD_S, vy * self._TAP_LEAD_S)
+                    lead = (vx * self._tap_lead_s, vy * self._tap_lead_s)
         self._prev_pan = (small, now)
         return lead
 

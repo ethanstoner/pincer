@@ -2,10 +2,84 @@ import os
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 
 import cv2
 import numpy as np
+
+
+class _StreamCapture:
+    """Continuous frame stream: `adb exec-out screenrecord --output-format=h264`
+    decoded by PyAV in a daemon thread. The newest BGR frame is always in
+    memory, so screencap() costs ~0 instead of a ~600ms capture+pull round
+    trip (measured live: ~27 fps at full 1080x2388). screenrecord hard-stops
+    at 3 minutes, so the thread respawns it forever. Requires `av` (present in
+    the training venv the bot runs under); the caller falls back to pull-based
+    capture whenever no fresh frame is available (startup, respawn gap, or a
+    dead stream)."""
+
+    _MAX_FRAME_AGE_S = 2.0   # older than this -> treat the stream as stale
+    _SEGMENT_S = 175         # respawn before screenrecord's 180s hard limit
+
+    def __init__(self, serial, adb_path):
+        self.serial = serial
+        self.adb_path = adb_path
+        self._lock = threading.Lock()
+        self._frame = None
+        self._frame_t = 0.0
+        self._proc = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import av  # lazy: only needed when streaming is active
+
+        while not self._stop.is_set():
+            try:
+                self._proc = subprocess.Popen(
+                    [self.adb_path, "-s", self.serial, "exec-out", "screenrecord",
+                     "--output-format=h264", "--bit-rate=8000000",
+                     f"--time-limit={self._SEGMENT_S}", "-"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                container = av.open(self._proc.stdout, format="h264", mode="r")
+                for frame in container.decode(video=0):
+                    if self._stop.is_set():
+                        break
+                    img = frame.to_ndarray(format="bgr24")
+                    with self._lock:
+                        self._frame = img
+                        self._frame_t = time.monotonic()
+            except Exception:
+                pass  # decode/link hiccup -> fall through to respawn
+            finally:
+                if self._proc is not None:
+                    try:
+                        self._proc.kill()
+                    except OSError:
+                        pass
+            if not self._stop.is_set():
+                time.sleep(0.5)  # brief backoff, then respawn the segment
+
+    def latest(self):
+        """Newest frame (BGR, copy) if fresh enough, else None."""
+        with self._lock:
+            if self._frame is None:
+                return None
+            if time.monotonic() - self._frame_t > self._MAX_FRAME_AGE_S:
+                return None
+            return self._frame.copy()
+
+    def close(self):
+        self._stop.set()
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except OSError:
+                pass
 
 
 class Device:
@@ -20,10 +94,19 @@ class Device:
     _CMD_TIMEOUT_S = 4.0
     _REMOTE_CAP = "/sdcard/_pogo_cap.raw"
 
-    def __init__(self, serial, adb_path):
+    # Capture-age hint for the catch loop's tap-lead: a streamed frame is
+    # ~0.2-0.3s old (encode+transfer) vs ~0.5s+ for capture+pull.
+    TAP_LEAD_STREAM_S = 0.35
+    TAP_LEAD_PULL_S = 0.55
+
+    def __init__(self, serial, adb_path, stream=False):
         self.serial = serial
         self.adb_path = adb_path
         self._local_cap = os.path.join(tempfile.gettempdir(), f"_pogo_cap_{serial}.raw")
+        self._stream = _StreamCapture(serial, adb_path) if stream else None
+        self.tap_lead_s = self.TAP_LEAD_STREAM_S if stream else self.TAP_LEAD_PULL_S
+        self._input_proc = None
+        self._input_lock = threading.Lock()
 
     def _adb(self, *args, timeout):
         """Run an adb command with no captured pipes so a hung call can be killed
@@ -68,12 +151,18 @@ class Device:
             return None
 
     def screencap(self):
-        """Grab a screenshot as a BGR ndarray via on-device raw capture + pull.
+        """Grab a screenshot as a BGR ndarray.
 
-        Screencap to a raw file on the device, then `pull` it (no captured binary
-        pipe), which lets the timeout actually kill a hung call. Retry a few times
-        to ride out truncated pulls on a flaky link. Returns the image, or None.
+        With streaming enabled, the newest streamed frame is returned instantly
+        (~0ms); the pull path below is the fallback for stream startup/hiccups.
+        Pull path: screencap to a raw file on the device, then `pull` it (no
+        captured binary pipe), which lets the timeout actually kill a hung
+        call. Retries ride out truncated pulls on a flaky link.
         """
+        if self._stream is not None:
+            img = self._stream.latest()
+            if img is not None:
+                return img
         for attempt in range(3):
             ok = self._adb(
                 "shell", "screencap", self._REMOTE_CAP,
@@ -91,18 +180,45 @@ class Device:
                 time.sleep(0.03)
         return None
 
+    # --- input: persistent `adb shell` session -----------------------------
+    # Spawning a fresh adb process per tap costs ~150-250ms; writing the input
+    # command into one long-lived shell costs ~20ms. On any write failure the
+    # session is respawned and the command falls back to a one-shot call.
+    def _input(self, cmd):
+        with self._input_lock:
+            for _ in range(2):
+                try:
+                    if self._input_proc is None or self._input_proc.poll() is not None:
+                        self._input_proc = subprocess.Popen(
+                            [self.adb_path, "-s", self.serial, "shell"],
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                        )
+                    self._input_proc.stdin.write(cmd + "\n")
+                    self._input_proc.stdin.flush()
+                    return
+                except (OSError, ValueError, AttributeError):
+                    try:
+                        self._input_proc.kill()
+                    except Exception:
+                        pass
+                    self._input_proc = None
+        self._run("shell", *cmd.split())  # last resort: one-shot call
+
     def tap(self, x, y):
-        self._run("shell", "input", "tap", str(x), str(y))
+        self._input(f"input tap {x} {y}")
 
     def swipe(self, x1, y1, x2, y2, ms):
-        self._run("shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(ms))
+        self._input(f"input swipe {x1} {y1} {x2} {y2} {ms}")
 
     def key_back(self):
-        self._run("shell", "input", "keyevent", "4")
+        self._input("input keyevent 4")
 
     def wake(self):
         """Turn the display back on (screencap returns black when it's asleep)."""
-        self._run("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+        self._input("input keyevent KEYCODE_WAKEUP")
 
     def set_stay_awake(self):
         """Keep the display on while powered (USB), so it never sleeps mid-run."""

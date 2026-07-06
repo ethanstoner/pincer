@@ -1,4 +1,4 @@
-import os
+﻿import os
 import threading
 
 from unittest.mock import MagicMock, patch
@@ -30,7 +30,7 @@ def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
     with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop, \
          patch("src.runner._make_detector_fn", return_value=None), \
          patch("src.runner.clear_click_audit"):   # never wipe the LIVE audit from tests
-        MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
+        MockDevice.side_effect = lambda serial, adb_path, stream=False: _make_device_mock()
         loop_instance = MagicMock()
         MockCatchLoop.return_value = loop_instance
 
@@ -75,7 +75,7 @@ def test_dry_run_device_does_not_forward_actions():
 
 def test_threaded_fanout_starts_one_loop_per_phone_and_runs_each_once():
     with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop:
-        MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
+        MockDevice.side_effect = lambda serial, adb_path, stream=False: _make_device_mock()
         loop_mocks = [MagicMock(), MagicMock()]
         MockCatchLoop.side_effect = loop_mocks
 
@@ -94,7 +94,7 @@ def test_threaded_fanout_starts_one_loop_per_phone_and_runs_each_once():
 
 def test_build_loops_fans_out_for_two_phones():
     with patch("src.runner.Device") as MockDevice:
-        MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
+        MockDevice.side_effect = lambda serial, adb_path, stream=False: _make_device_mock()
         config = load_config(TWO_PHONE_CONFIG)
 
         loops = _build_loops(config, config.phones, dry_run=True)

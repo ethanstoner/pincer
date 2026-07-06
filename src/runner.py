@@ -96,7 +96,7 @@ def _build_loops(config, phones, dry_run):
     detector_fn = _make_detector_fn(config)
     loops = []
     for phone in phones:
-        device = Device(phone.serial, config.adb_path)
+        device = Device(phone.serial, config.adb_path, stream=config.stream)
         if dry_run:
             device = DryRunDevice(device)
         else:
