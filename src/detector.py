@@ -54,7 +54,10 @@ class Target:
 # this band, so they are rejected by the shape+photodisc filters below, not by
 # the region), while every labeled real Pokemon centroid falls inside the band.
 SEARCH_X_LOW = 0.10
-SEARCH_X_HIGH = 0.95
+# Right edge 0.87: the fixed right-side UI column (pause, calendar, binoculars/
+# Campfire, rocket radar) sits at x-ratio ~0.92 -- at 0.95 the detector tapped
+# the binoculars rim and opened Campfire (live audit catch).
+SEARCH_X_HIGH = 0.87
 # Top edge was 0.40 when the ONLY gym defense was this region cut; live recall
 # eval showed real catchable Pokemon walking just above it. Now that gyms,
 # badges and tower-toppers have dedicated semantic rejectors, the band opens
