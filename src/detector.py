@@ -561,6 +561,38 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
     return img_path
 
 
+def save_negative_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
+    """Save a HARD-NEGATIVE training example from a tap that opened a closable
+    panel (gym / stop / power spot / Rocket / Route...): the full map frame plus
+    a one-box label of class 1 ("avoid") at the tapped bbox. YOLO then learns
+    panel-openers as an explicit class -- far stronger avoidance signal than
+    leaving them as implicit background -- and the live detector acts ONLY on
+    class-0 (pokemon) boxes. Stems are `avoid_*` beside the `pokemon_*` frames.
+
+    (Only `panel` outcomes are saved: the tap PROVABLY hit an interactable
+    non-Pokemon object. `nothing` outcomes stay unlabeled -- they are usually
+    motion-drift misses of REAL Pokemon, which must not be taught as avoid.)
+    """
+    images_dir = os.path.join(dataset_dir, "images")
+    labels_dir = os.path.join(dataset_dir, "labels")
+    h, w = img.shape[:2]
+    bx, by, bw, bh = target.bbox
+    cx = (bx + bw / 2.0) / w
+    cy = (by + bh / 2.0) / h
+
+    with _LABEL_LOCK:
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(labels_dir, exist_ok=True)
+        index = _next_label_index(images_dir, prefix="avoid_")
+        stem = f"avoid_{index:06d}"
+        img_path = os.path.join(images_dir, f"{stem}.png")
+        with open(os.path.join(labels_dir, f"{stem}.txt"), "w") as f:
+            f.write(f"1 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
+        cv2.imwrite(img_path, img)
+
+    return img_path
+
+
 # Padding around the target bbox in a click-audit crop: enough surrounding map
 # context to tell WHAT the detector latched onto (a stop's disc, a route bubble,
 # VFX) without saving the whole frame.

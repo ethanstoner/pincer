@@ -23,7 +23,11 @@ DATA = os.path.join(HERE, "yolo_data")
 EPOCHS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "yolo11s.pt"
 
-cfg = {"path": DATA, "train": "images/train", "val": "images/val", "names": {0: "pokemon"}}
+# class 1 "avoid" = hard negatives from taps that opened a panel (gym / stop /
+# power spot / Rocket...), saved live by detector.save_negative_label. The bot
+# only ever ACTS on class-0 boxes; class 1 exists to soak up panel objects.
+cfg = {"path": DATA, "train": "images/train", "val": "images/val",
+       "names": {0: "pokemon", 1: "avoid"}}
 yaml_path = os.path.join(HERE, "_dataset.yaml")
 with open(yaml_path, "w") as f:
     yaml.safe_dump(cfg, f)

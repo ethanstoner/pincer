@@ -26,6 +26,7 @@ from src.config import resolve_point
 from src.detector import propose
 from src.detector import save_click_debug as _save_click_debug
 from src.detector import save_label as _save_label
+from src.detector import save_negative_label as _save_negative_label
 from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
 from src.screen_state import has_close_button as _has_close_button
@@ -58,6 +59,7 @@ class CatchLoop:
         classifier=_classify,
         detector_fn=propose,
         labeler=_save_label,
+        neg_labeler=_save_negative_label,
         click_logger=_save_click_debug,
         sleep_fn=time.sleep,
         rng=None,
@@ -71,6 +73,7 @@ class CatchLoop:
         self.classifier = classifier
         self.detector_fn = detector_fn
         self.labeler = labeler
+        self.neg_labeler = neg_labeler
         self.click_logger = click_logger
         self.sleep_fn = sleep_fn
         self.rng = rng if rng is not None else random.Random()
@@ -316,7 +319,12 @@ class CatchLoop:
                 self._fail_spots.append(
                     (target.x, target.y, self.clock() + self._FAIL_SPOT_TTL_S)
                 )
-                self.click_logger(img, target, self._bail_outcome(bail_img),
+                outcome = self._bail_outcome(bail_img)
+                if outcome == "panel":
+                    # The tap provably hit an interactable non-Pokemon object:
+                    # save it as a class-1 "avoid" YOLO example (hard negative).
+                    self.neg_labeler(img, target, self.config.dataset_dir)
+                self.click_logger(img, target, outcome,
                                   self.config.dataset_dir, result_img=bail_img)
                 self._recover(img=bail_img)
                 return

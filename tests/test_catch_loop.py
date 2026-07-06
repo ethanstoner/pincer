@@ -83,11 +83,15 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
     device = device or FakeDevice()
     detector_fn = detector_fn or (lambda img, phone: None)
     close_check = close_check or (lambda img: False)
-    calls = {"labels": [], "clicks": []}
+    calls = {"labels": [], "clicks": [], "neg_labels": []}
 
     def default_labeler(img, target, dataset_dir):
         calls["labels"].append((img, target, dataset_dir))
         return "labeled.png"
+
+    def neg_labeler(img, target, dataset_dir):
+        calls["neg_labels"].append((target, dataset_dir))
+        return "avoid.png"
 
     def click_logger(img, target, outcome, dataset_dir, result_img=None):
         calls["clicks"].append((target, outcome))
@@ -108,6 +112,7 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
         classifier=classifier,
         detector_fn=detector_fn,
         labeler=labeler,
+        neg_labeler=neg_labeler,
         click_logger=click_logger,
         sleep_fn=sleep_fn,
         rng=random.Random(42),
@@ -245,6 +250,31 @@ def test_click_logger_records_panel_outcome_on_mistap():
     loop.tick()
     assert calls["clicks"] == [(target, "panel")]
     assert calls["labels"] == []     # a mis-tap never becomes YOLO training data
+
+
+def test_panel_tap_saves_hard_negative_label():
+    # tap opened a closable panel -> saved as a class-1 "avoid" YOLO example
+    classifier = Scripted([ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP])
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, calls, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target,
+        close_check=lambda img: True,
+    )
+    loop.tick()
+    assert calls["neg_labels"] == [(target, "dataset")]
+    assert calls["labels"] == []            # never ALSO a positive label
+
+
+def test_empty_tap_saves_no_negative_label():
+    # 'nothing' outcomes are usually drift-misses of REAL Pokemon -> teaching
+    # them as "avoid" would poison the model. No negative label.
+    classifier = Scripted([ScreenState.MAP])   # sticky map = empty tap
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, calls, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target
+    )
+    loop.tick()
+    assert calls["neg_labels"] == []
 
 
 def test_click_logger_records_nothing_outcome_on_empty_tap():

@@ -41,6 +41,8 @@ class YoloDetector:
         ax, ay = AVATAR_RATIO[0] * w, AVATAR_RATIO[1] * h
         best, best_dist = None, None
         for box in result.boxes:
+            if int(box.cls) != 0:
+                continue  # class 1 = "avoid" (panel objects); never tap those
             x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
             cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
             # Same central-region guard as the CV detector: off the UI strips and
