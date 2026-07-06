@@ -28,7 +28,8 @@ def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
     # detector, whose ultralytics dependency lives only in the training venv.
     n_phones = len(load_config("config.json").phones)
     with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop, \
-         patch("src.runner._make_detector_fn", return_value=None):
+         patch("src.runner._make_detector_fn", return_value=None), \
+         patch("src.runner.clear_click_audit"):   # never wipe the LIVE audit from tests
         MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
         loop_instance = MagicMock()
         MockCatchLoop.return_value = loop_instance
@@ -44,7 +45,8 @@ def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
 
 def test_phone_filter_selects_only_matching_serial():
     with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop, \
-         patch("src.runner._make_detector_fn", return_value=None):
+         patch("src.runner._make_detector_fn", return_value=None), \
+         patch("src.runner.clear_click_audit"):   # never wipe the LIVE audit from tests
         main(["--config", "config.json", "--phone", "NONEXISTENT", "--once", "--dry-run"])
 
         assert MockDevice.call_count == 0
