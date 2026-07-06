@@ -47,7 +47,10 @@ def test_encounter_fixtures_classify_as_encounter(name):
     assert classify(_load(name)) == ScreenState.ENCOUNTER
 
 # --- MAP fixtures must classify as MAP and NEVER as ENCOUNTER (dangerous) ---
-@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "radar0.png", "radar1.png"])
+# map_purple_storm.png: live frame under event weather -- the purple raid-storm
+# sky pushes the map hue outside the hue/sat window, which froze both phones in
+# an UNKNOWN->wait loop; the pokeball-button signal now classifies it MAP.
+@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "radar0.png", "radar1.png", "map_purple_storm.png"])
 def test_map_fixtures_classify_as_map(name):
     result = classify(_load(name))
     assert result != ScreenState.ENCOUNTER  # never throw balls on a map

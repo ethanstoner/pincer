@@ -257,6 +257,14 @@ def classify(img: np.ndarray) -> ScreenState:
     if has_close_button(img):
         return ScreenState.UNKNOWN
 
+    # The overworld pokeball button is the STRONGEST map signal (measured
+    # 1.000 on every map fixture, <= 0.69 on panels): event weather (purple
+    # raid-storm sky) shifts the map hue outside the window below, which froze
+    # BOTH phones in an UNKNOWN->wait loop on a perfectly good map. Panels
+    # were already returned above, so this cannot fire on one.
+    if has_map_pokeball(img):
+        return ScreenState.MAP
+
     full_h, full_s, _ = _region_hsv_mean(img, 0.0, 1.0, 0.0, 1.0)
     mid_h, mid_s, _ = _region_hsv_mean(img, 0.35, 0.65, 0.2, 0.8)
     is_map = (
