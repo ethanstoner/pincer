@@ -25,6 +25,7 @@ from src.detector import propose
 from src.detector import save_label as _save_label
 from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
+from src.screen_state import has_close_button as _has_close_button
 from src.screen_state import in_encounter as _in_encounter
 
 
@@ -36,6 +37,7 @@ class CatchLoop:
     _ERROR_BACKOFF_MS = (1000, 1000)  # brief pause after a crashed tick
     _RECOVER_ATTEMPTS = 4
     _RECOVER_POLL_MS = 1500           # short per-attempt poll (PoGo close is ~instant)
+    _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
 
     def __init__(
         self,
@@ -48,6 +50,7 @@ class CatchLoop:
         sleep_fn=time.sleep,
         rng=None,
         encounter_check=_in_encounter,
+        close_check=_has_close_button,
         clock=time.monotonic,
     ):
         self.device = device
@@ -59,6 +62,7 @@ class CatchLoop:
         self.sleep_fn = sleep_fn
         self.rng = rng if rng is not None else random.Random()
         self.encounter_check = encounter_check
+        self.close_check = close_check
         self.clock = clock
 
     # --- small helpers -----------------------------------------------------
@@ -113,6 +117,32 @@ class CatchLoop:
             if (self.clock() - start) * 1000.0 >= timeout_ms:
                 return last_img, False
             self.sleep_fn(interval_ms / 1000.0)
+
+    def _await_encounter(self, timeout_ms):
+        """After tapping a map target, wait for the encounter UI -- but BAIL the
+        instant it's clear no encounter will open, instead of burning the whole
+        timeout. Returns the confirmed encounter frame, or None to back out.
+
+        Bail-fast cases (the common mis-tap costs):
+          - a closable panel opened (gym / PokeStop / menu) -> its X is visible;
+          - we're still on the MAP past the transition window -> tap hit nothing.
+        Neither can ever be a loading encounter, so leaving early is safe. INV-1
+        is preserved: a None return routes the caller to _recover, never a throw.
+        """
+        start = self.clock()
+        while True:
+            img = self.device.screencap()
+            if img is not None:
+                if self.encounter_check(img):
+                    return img  # encounter UI confirmed -> the ONLY throw path
+                if self.close_check(img):
+                    return None  # gym / stop / menu opened -> bail now
+                elapsed = (self.clock() - start) * 1000.0
+                if elapsed >= self._MAP_BAIL_MS and self.classifier(img) == ScreenState.MAP:
+                    return None  # transition window passed, still map -> tap opened nothing
+            if (self.clock() - start) * 1000.0 >= timeout_ms:
+                return None
+            self.sleep_fn(self._POLL_INTERVAL_MS / 1000.0)
 
     # --- recovery (NEVER throws) ------------------------------------------
     def _recover(self, state=None):
@@ -186,12 +216,11 @@ class CatchLoop:
                 self._jitter(target.y, self._TAP_JITTER_PX),
             )
 
-            # Proceed the instant the encounter UI appears; bail if it never does.
-            img2, ok = self._poll(self.encounter_check, self._timeout("encounter_load_ms"))
-            if not ok:
+            # Proceed the instant the encounter UI appears; bail fast otherwise.
+            enc_img = self._await_encounter(self._timeout("encounter_load_ms"))
+            if enc_img is None:
                 # Tap did not open an encounter -> back out. INV-1: no throw.
-                fallback = self.classifier(img2) if img2 is not None else ScreenState.UNKNOWN
-                self._recover(fallback)
+                self._recover()
                 return
 
             self.labeler(img, target, self.config.dataset_dir)  # confirmed -> self-label

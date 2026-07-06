@@ -12,8 +12,8 @@
     "close_button":  [0.49800, 0.95270]
   },
   "timing": {
-    "encounter_load_ms": [1500, 1900],
-    "post_throw_ms":     [1800, 2300],
+    "encounter_load_ms": [1500, 2600],
+    "post_throw_ms":     [1800, 2600],
     "map_scan_ms":       [100, 250],
     "stuck_timeout_ms":  15000,
     "max_throws": 12

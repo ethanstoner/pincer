@@ -115,6 +115,42 @@ def in_encounter(img: np.ndarray) -> bool:
     return all(s >= _MATCH_THRESHOLD for s in encounter_scores(img))
 
 
+# --- closable-panel (gym / PokeStop / menu) detection --------------------------
+# Gyms, PokeStops and full-screen menus all show a circular X close button at the
+# bottom-centre that the map and encounter screens do NOT have. Detecting it lets
+# the catch loop bail out of a mis-tapped panel immediately, instead of waiting
+# out the whole encounter-load timeout. Measured close_x match scores:
+#   gym / pokestop screens : ~1.000 (button is pixel-identical across panels)
+#   map / encounter screens: <= 0.64
+# Threshold 0.82 sits in the gap (margin >= 0.18 either side).
+_CLOSE_THRESHOLD = 0.82
+_CLOSE_ANCHOR = ("close_x.png", 0.498, 0.9527, 68)  # (file, cx ratio, cy ratio, half px)
+
+
+def _load_close_template():
+    path = os.path.join(_TEMPLATE_DIR, _CLOSE_ANCHOR[0])
+    templ = cv2.imread(path)
+    if templ is None:
+        raise FileNotFoundError(f"close-button template missing: {path}")
+    return templ
+
+
+_CLOSE_TEMPLATE = _load_close_template()
+
+
+def close_button_score(img: np.ndarray) -> float:
+    """Match score for the bottom-centre X close button (exposed for tests/debug)."""
+    _, cxr, cyr, half = _CLOSE_ANCHOR
+    return _anchor_score(img, _CLOSE_TEMPLATE, cxr, cyr, half)
+
+
+def has_close_button(img: np.ndarray) -> bool:
+    """True iff the X close button is present -- i.e. we're on a gym / PokeStop /
+    menu panel (NOT the map and NOT an encounter). Lets the loop exit a mis-tapped
+    panel at once."""
+    return close_button_score(img) >= _CLOSE_THRESHOLD
+
+
 def _region_hsv_mean(img, y0, y1, x0, x1):
     h, w = img.shape[:2]
     region = img[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]

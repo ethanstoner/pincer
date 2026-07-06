@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
 import pytest
-from src.screen_state import classify, ScreenState, encounter_scores, in_encounter, _MATCH_THRESHOLD
+from src.screen_state import (
+    classify, ScreenState, encounter_scores, in_encounter, _MATCH_THRESHOLD,
+    has_close_button, close_button_score,
+)
 
 def _load(name): return cv2.imread(f"tests/fixtures/{name}")
 
@@ -48,3 +51,19 @@ def test_encounter_anchor_score_margin():
     # ...and every map fixture scores well below threshold on at least one anchor.
     for name in ["map.png", "map_after_catch.png", "radar0.png", "radar1.png"]:
         assert min(encounter_scores(_load(name))) < _MATCH_THRESHOLD - 0.15
+
+
+# --- has_close_button(): detects a mis-tapped gym / PokeStop / menu so the loop
+#     can bail instead of waiting out the encounter timeout. ---
+def test_has_close_button_true_on_gym():
+    assert has_close_button(_load("gym.png")) is True
+
+@pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"])
+def test_has_close_button_false_off_panel(name):
+    assert has_close_button(_load(name)) is False
+
+def test_close_button_score_margin():
+    # gym scores ~1.0; map/encounter score well under the 0.82 threshold.
+    assert close_button_score(_load("gym.png")) >= 0.95
+    for name in ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"]:
+        assert close_button_score(_load(name)) < 0.72
