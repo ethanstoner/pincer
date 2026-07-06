@@ -22,6 +22,9 @@ import math
 import random
 import time
 
+import cv2
+import numpy as np
+
 from src.config import resolve_point
 from src.detector import propose
 from src.detector import save_click_debug as _save_click_debug
@@ -54,6 +57,17 @@ class CatchLoop:
     # embargoes still allowed ~2.5 panel taps per minute near one.
     _FAIL_SPOT_TTL_S = 20.0
     _FAIL_SPOT_RADIUS = 170
+    # Tap-lead (motion compensation): autowalk pans the map continuously, so a
+    # target detected on a ~0.5s-old frame has MOVED by tap time -- live audit
+    # showed streaks of near-miss taps ~40-80px behind real Pokemon. Pan
+    # velocity is measured by phase-correlating consecutive downscaled map
+    # frames; the tap leads the target by velocity * _TAP_LEAD_S.
+    _TAP_LEAD_S = 0.55            # capture transfer + detect + adb tap latency
+    _PAN_DOWNSCALE = 4
+    _PAN_BAND = (0.35, 0.78, 0.08, 0.92)   # (y0r, y1r, x0r, x1r) HUD-free band
+    _PAN_MIN_SPEED = 12.0         # px/s -- below this, don't bother leading
+    _PAN_MAX_SPEED = 320.0        # px/s -- above this, correlation is garbage
+    _PAN_MIN_RESPONSE = 0.10      # phaseCorrelate confidence floor
     _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
 
     def __init__(
@@ -90,6 +104,7 @@ class CatchLoop:
         self.ok_finder = ok_finder
         self.clock = clock
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
+        self._prev_pan = None  # (downscaled gray band, timestamp) for tap-lead
         try:
             self._detector_takes_exclude = (
                 "exclude" in inspect.signature(detector_fn).parameters
@@ -180,6 +195,41 @@ class CatchLoop:
             if (self.clock() - start) * 1000.0 >= timeout_ms:
                 return None, last_img
             self.sleep_fn(self._POLL_INTERVAL_MS / 1000.0)
+
+    def _pan_lead(self, img, now):
+        """(dx, dy) px to ADD to a tap so it lands where the target will BE.
+
+        Phase-correlates a downscaled HUD-free band of consecutive map frames
+        to measure the autowalk pan velocity, then multiplies by the fixed
+        capture-to-tap latency. Returns (0, 0) whenever the measurement is
+        implausible (no prior frame, stale prior, low correlation confidence,
+        or speed outside the sane range) -- a bad lead is worse than none.
+        """
+        h, w = img.shape[:2]
+        y0r, y1r, x0r, x1r = self._PAN_BAND
+        band = img[int(y0r * h):int(y1r * h), int(x0r * w):int(x1r * w)]
+        if band.shape[0] < 128 or band.shape[1] < 128:
+            return (0.0, 0.0)  # tiny/degenerate frame -> nothing to correlate
+        gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+        s = 1.0 / self._PAN_DOWNSCALE
+        small = cv2.resize(gray, None, fx=s, fy=s).astype(np.float32)
+
+        lead = (0.0, 0.0)
+        if self._prev_pan is not None:
+            prev_small, prev_t = self._prev_pan
+            dt = now - prev_t
+            if 0.05 < dt < 3.0 and prev_small.shape == small.shape:
+                (dx, dy), response = cv2.phaseCorrelate(prev_small, small)
+                # (dx, dy) = how far the scene content moved prev -> current
+                # (in downscaled px); targets move WITH the scene.
+                vx = dx * self._PAN_DOWNSCALE / dt
+                vy = dy * self._PAN_DOWNSCALE / dt
+                speed = math.hypot(vx, vy)
+                if (response >= self._PAN_MIN_RESPONSE
+                        and self._PAN_MIN_SPEED < speed < self._PAN_MAX_SPEED):
+                    lead = (vx * self._TAP_LEAD_S, vy * self._TAP_LEAD_S)
+        self._prev_pan = (small, now)
+        return lead
 
     def _bail_outcome(self, bail_img):
         """Name what a failed tap actually opened, for the click-audit trail:
@@ -315,6 +365,7 @@ class CatchLoop:
 
         if state == ScreenState.MAP:
             now = self.clock()
+            lead_x, lead_y = self._pan_lead(img, now)  # motion compensation
             self._fail_spots = [s for s in self._fail_spots if s[2] > now]
             exclude = [(fx, fy, self._FAIL_SPOT_RADIUS) for fx, fy, _ in self._fail_spots]
             if self._detector_takes_exclude:
@@ -333,8 +384,8 @@ class CatchLoop:
                 return
 
             self.device.tap(
-                self._jitter(target.x, self._TAP_JITTER_PX),
-                self._jitter(target.y, self._TAP_JITTER_PX),
+                self._jitter(target.x + int(lead_x), self._TAP_JITTER_PX),
+                self._jitter(target.y + int(lead_y), self._TAP_JITTER_PX),
             )
 
             # Proceed the instant the encounter UI appears; bail fast otherwise.

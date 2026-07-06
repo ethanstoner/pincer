@@ -1,6 +1,7 @@
 import random
 import threading
 
+import cv2
 import numpy as np
 
 from src.catch_loop import CatchLoop
@@ -381,6 +382,32 @@ def test_propose_exclude_zone_yields_a_different_target():
     t2 = propose(img, phone, exclude=[(t1.x, t1.y, 60)])
     if t2 is not None:  # another candidate exists -> must be a different spot
         assert (abs(t2.x - t1.x) > 60) or (abs(t2.y - t1.y) > 60)
+
+
+def test_pan_lead_points_in_the_direction_targets_move():
+    # Scene content moves right+down between frames -> targets will keep
+    # moving that way -> the tap must lead RIGHT+DOWN by velocity * lead-time.
+    rng = np.random.default_rng(7)
+    base = (rng.random((2388, 1080)) * 255).astype(np.uint8)
+    frame1 = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    rolled = np.roll(np.roll(base, 40, axis=0), 24, axis=1)  # down 40, right 24
+    frame2 = cv2.cvtColor(rolled, cv2.COLOR_GRAY2BGR)
+
+    loop, _, _, _ = make_loop(Scripted([ScreenState.MAP]), Scripted([False]))
+    assert loop._pan_lead(frame1, 10.0) == (0.0, 0.0)   # no prior frame yet
+    lx, ly = loop._pan_lead(frame2, 10.5)               # dt = 0.5s
+    # velocity = (24, 40)/0.5 = (48, 80) px/s; lead = v * 0.55 = (26.4, 44)
+    assert 10 < lx < 45, lx
+    assert 20 < ly < 70, ly
+
+
+def test_pan_lead_zero_when_scene_is_static():
+    rng = np.random.default_rng(9)
+    base = (rng.random((2388, 1080)) * 255).astype(np.uint8)
+    frame = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    loop, _, _, _ = make_loop(Scripted([ScreenState.MAP]), Scripted([False]))
+    loop._pan_lead(frame, 5.0)
+    assert loop._pan_lead(frame.copy(), 5.5) == (0.0, 0.0)  # below min speed
 
 
 def test_recover_uses_provided_frame_without_extra_screencap():
