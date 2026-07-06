@@ -83,11 +83,15 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
     device = device or FakeDevice()
     detector_fn = detector_fn or (lambda img, phone: None)
     close_check = close_check or (lambda img: False)
-    calls = {"labels": []}
+    calls = {"labels": [], "clicks": []}
 
     def default_labeler(img, target, dataset_dir):
         calls["labels"].append((img, target, dataset_dir))
         return "labeled.png"
+
+    def click_logger(img, target, outcome, dataset_dir):
+        calls["clicks"].append((target, outcome))
+        return "click.png"
 
     labeler = labeler or default_labeler
     sleeps = []
@@ -104,6 +108,7 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
         classifier=classifier,
         detector_fn=detector_fn,
         labeler=labeler,
+        click_logger=click_logger,
         sleep_fn=sleep_fn,
         rng=random.Random(42),
         encounter_check=encounter_check,
@@ -192,6 +197,65 @@ def test_await_encounter_bails_when_still_map_after_transition_window():
     enc_img, _ = loop._await_encounter(100000)
     assert enc_img is None
     assert device.screencaps < 30        # bailed ~_MAP_BAIL_MS in, not after 100s
+
+
+def test_recover_blind_taps_close_spot_when_no_theme_matches():
+    # A panel whose X theme has NO template yet (Rocket and Route both started
+    # this way): classify stays UNKNOWN, close_check never fires. After the
+    # early waits, recovery must blind-tap the universal bottom-centre X spot
+    # instead of spinning forever -- and still NEVER throw.
+    classifier = Scripted([ScreenState.UNKNOWN])   # stuck forever, unrecognized
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), close_check=lambda img: False
+    )
+    loop._recover()
+    assert loop._pt("close_button") in device.taps  # escalated to the blind tap
+    assert device.swipes == []                      # INV-2: still never throws
+
+
+def test_recover_does_not_blind_tap_transient_unknowns_that_resolve():
+    # UNKNOWN for one attempt (e.g. catch animation) then MAP: must resolve by
+    # waiting -- no blind tap fired before the escalation threshold.
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), close_check=lambda img: False
+    )
+    loop._recover()
+    assert device.taps == []
+
+
+def test_click_logger_records_encounter_outcome_on_good_tap():
+    classifier = Scripted([ScreenState.MAP])
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, calls, _ = make_loop(
+        classifier, Scripted([True]), detector_fn=lambda img, phone: target
+    )
+    loop.tick()
+    assert calls["clicks"] == [(target, "encounter")]
+
+
+def test_click_logger_records_panel_outcome_on_mistap():
+    # tap opened a gym/stop/Rocket panel -> the audit crop is filed under panel/
+    classifier = Scripted([ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP])
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, calls, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target,
+        close_check=lambda img: True,
+    )
+    loop.tick()
+    assert calls["clicks"] == [(target, "panel")]
+    assert calls["labels"] == []     # a mis-tap never becomes YOLO training data
+
+
+def test_click_logger_records_nothing_outcome_on_empty_tap():
+    # tap hit empty scenery: still MAP past the transition window
+    classifier = Scripted([ScreenState.MAP])   # sticky MAP throughout
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, calls, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target
+    )
+    loop.tick()
+    assert calls["clicks"] == [(target, "nothing")]
 
 
 def test_recover_uses_provided_frame_without_extra_screencap():

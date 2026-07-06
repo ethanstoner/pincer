@@ -132,12 +132,21 @@ def in_encounter(img: np.ndarray) -> bool:
 #     so classify() ran the detector on it. Cropped from a real stuck frame
 #     (tests/fixtures/rocket_grunt.png). Measured: rocket 1.0000, all other
 #     fixtures <= 0.17.
-# Threshold 0.60 sits in the gap for BOTH templates (margin >= 0.21 either side).
+#   - close_x_route.png: teal ring + teal X on a LIGHT card -- the Route detail
+#     screen (grey scored 0.20, rocket 0.47 there -> got stuck on a route
+#     marker). Cropped from a real stuck frame (tests/fixtures/route_screen.png).
+#     Measured: route 1.0000, all other fixtures <= 0.42.
+# Threshold 0.60 sits in the gap for ALL templates (margin >= 0.18 either side).
+# NOTE: _recover also blind-taps this same bottom-centre spot when a screen
+# stays un-playable with NO template match, so an unseen theme delays the bot a
+# couple seconds instead of trapping it -- but add a template (crop the real
+# frame, measure margins on all fixtures) whenever a new theme shows up.
 _CLOSE_THRESHOLD = 0.60
 # (file, cx ratio, cy ratio, half px) -- one entry per close-button THEME
 _CLOSE_ANCHORS = [
     ("close_x.png", 0.498, 0.9527, 42),
     ("close_x_rocket.png", 0.500, 0.9455, 42),
+    ("close_x_route.png", 0.500, 0.9410, 42),
 ]
 
 

@@ -22,6 +22,7 @@ import time
 
 from src.config import resolve_point
 from src.detector import propose
+from src.detector import save_click_debug as _save_click_debug
 from src.detector import save_label as _save_label
 from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
@@ -38,6 +39,7 @@ class CatchLoop:
     _ERROR_BACKOFF_MS = (1000, 1000)  # brief pause after a crashed tick
     _RECOVER_ATTEMPTS = 4
     _RECOVER_POLL_MS = 1500           # short per-attempt poll (PoGo close is ~instant)
+    _BLIND_CLOSE_AFTER = 2            # attempts w/o a recognized X before blind-tapping the X spot
     _MAP_BAIL_MS = 1200               # after this, still-on-MAP means the tap opened nothing
 
     def __init__(
@@ -48,6 +50,7 @@ class CatchLoop:
         classifier=_classify,
         detector_fn=propose,
         labeler=_save_label,
+        click_logger=_save_click_debug,
         sleep_fn=time.sleep,
         rng=None,
         encounter_check=_in_encounter,
@@ -60,6 +63,7 @@ class CatchLoop:
         self.classifier = classifier
         self.detector_fn = detector_fn
         self.labeler = labeler
+        self.click_logger = click_logger
         self.sleep_fn = sleep_fn
         self.rng = rng if rng is not None else random.Random()
         self.encounter_check = encounter_check
@@ -150,6 +154,18 @@ class CatchLoop:
                 return None, last_img
             self.sleep_fn(self._POLL_INTERVAL_MS / 1000.0)
 
+    def _bail_outcome(self, bail_img):
+        """Name what a failed tap actually opened, for the click-audit trail:
+        'panel' (gym/stop/Rocket/Route...), 'nothing' (still on the map), or
+        'timeout' (never resolved / no frame)."""
+        if bail_img is None:
+            return "timeout"
+        if self.close_check(bail_img):
+            return "panel"
+        if self.classifier(bail_img) == ScreenState.MAP:
+            return "nothing"
+        return "timeout"
+
     # --- recovery (NEVER throws) ------------------------------------------
     def _recover(self, state=None, img=None):
         """Get back to a playable screen after a mis-tap. INV-2: never throws.
@@ -170,7 +186,7 @@ class CatchLoop:
             here: pressing back on a mid-load encounter would flee it.
         """
         playable = (ScreenState.MAP, ScreenState.ENCOUNTER)
-        for _ in range(self._RECOVER_ATTEMPTS):
+        for attempt in range(self._RECOVER_ATTEMPTS):
             frame = img if img is not None else self.device.screencap()
             img = None  # a caller-provided frame is only current for attempt 1
             if frame is None:
@@ -178,7 +194,16 @@ class CatchLoop:
                 continue
             if self.classifier(frame) in playable:
                 return
-            if self.close_check(frame):
+            if self.close_check(frame) or attempt >= self._BLIND_CLOSE_AFTER:
+                # Recognized X theme -> tap it. OR: the screen stayed
+                # un-playable through the early waits with NO template match --
+                # every closable PoGo panel (gym / stop / menu / Rocket / Route)
+                # puts its X at this same bottom-centre spot, so tap it BLINDLY:
+                # an unseen panel theme self-heals in a couple seconds instead
+                # of trapping the loop forever (Rocket and Route both did that
+                # before their templates existed). Still INV-2: only ever a
+                # close tap, never a throw/swipe; and playable screens returned
+                # above, so this never fires on MAP or an encounter.
                 self.device.tap(*self._pt("close_button"))
                 _, ok = self._poll(
                     lambda im: self.classifier(im) in playable,
@@ -258,6 +283,7 @@ class CatchLoop:
             if enc_img is None:
                 # Tap did not open an encounter -> back out on the frame we
                 # already have (no extra screencap). INV-1: no throw.
+                self.click_logger(img, target, self._bail_outcome(bail_img), self.config.dataset_dir)
                 self._recover(img=bail_img)
                 return
 
@@ -265,6 +291,7 @@ class CatchLoop:
             # write never delays the ball.
             self._run_throw_loop(first_frame=enc_img)
             self.labeler(img, target, self.config.dataset_dir)
+            self.click_logger(img, target, "encounter", self.config.dataset_dir)
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter

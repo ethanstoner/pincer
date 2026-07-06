@@ -233,13 +233,13 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
     return best_target
 
 
-def _next_label_index(images_dir: str) -> int:
+def _next_label_index(images_dir: str, prefix: str = "pokemon_") -> int:
     if not os.path.isdir(images_dir):
         return 0
     highest = -1
     for name in os.listdir(images_dir):
         stem, ext = os.path.splitext(name)
-        if ext.lower() != ".png" or not stem.startswith("pokemon_"):
+        if ext.lower() != ".png" or not stem.startswith(prefix):
             continue
         try:
             idx = int(stem.split("_")[-1])
@@ -280,3 +280,39 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
             f.write(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
 
     return img_path
+
+
+# Padding around the target bbox in a click-audit crop: enough surrounding map
+# context to tell WHAT the detector latched onto (a stop's disc, a route bubble,
+# VFX) without saving the whole frame.
+_CLICK_PAD = 100
+
+
+def save_click_debug(img: np.ndarray, target: Target, outcome: str, dataset_dir: str) -> str:
+    """Audit trail of EVERY tap the bot attempts: a padded crop of the map frame
+    around the proposed target, with the detector's bbox drawn in red, filed by
+    what the tap turned out to open:
+
+        <dataset>/clicks/encounter/  tap opened an encounter (real Pokemon - correct)
+        <dataset>/clicks/panel/      tap opened a closable panel (gym / stop /
+                                     Rocket / Route ... - a WRONG click)
+        <dataset>/clicks/nothing/    still on the map afterwards (empty scenery)
+        <dataset>/clicks/timeout/    screen never resolved within the timeout
+
+    Review the panel/ and nothing/ folders to see exactly which map objects the
+    detector keeps mistaking for Pokemon, then tune/train against them.
+    """
+    h, w = img.shape[:2]
+    bx, by, bw, bh = target.bbox
+    x0, y0 = max(0, bx - _CLICK_PAD), max(0, by - _CLICK_PAD)
+    x1, y1 = min(w, bx + bw + _CLICK_PAD), min(h, by + bh + _CLICK_PAD)
+    crop = img[y0:y1, x0:x1].copy()
+    cv2.rectangle(crop, (bx - x0, by - y0), (bx - x0 + bw, by - y0 + bh), (0, 0, 255), 3)
+
+    out_dir = os.path.join(dataset_dir, "clicks", outcome)
+    with _LABEL_LOCK:  # atomic index+write so 2 phones can't collide
+        os.makedirs(out_dir, exist_ok=True)
+        index = _next_label_index(out_dir, prefix="click_")
+        path = os.path.join(out_dir, f"click_{index:06d}.png")
+        cv2.imwrite(path, crop)
+    return path

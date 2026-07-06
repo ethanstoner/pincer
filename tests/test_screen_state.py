@@ -65,7 +65,7 @@ def test_encounter_anchor_score_margin():
 #     can bail instead of waiting out the encounter timeout. Must fire on BOTH
 #     gym (dark theme) and PokeStop (light theme) -- a gym-only template got stuck
 #     on PokeStops. ---
-@pytest.mark.parametrize("name", ["gym.png", "pokestop.png", "rocket_grunt.png"])
+@pytest.mark.parametrize("name", ["gym.png", "pokestop.png", "rocket_grunt.png", "route_screen.png"])
 def test_has_close_button_true_on_closable_panels(name):
     assert has_close_button(_load(name)) is True
 
@@ -78,18 +78,22 @@ def test_close_button_score_margin():
     assert close_button_score(_load("pokestop.png")) >= 0.90
     assert close_button_score(_load("gym.png")) >= 0.75
     assert close_button_score(_load("rocket_grunt.png")) >= 0.90  # teal Rocket X theme
+    assert close_button_score(_load("route_screen.png")) >= 0.90  # Route detail X theme
     for name in ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"]:
         assert close_button_score(_load(name)) < 0.50
 
 
-# --- Team GO Rocket grunt dialog: the stuck-on-invaded-stop regression ----------
-# Real frame from a live run. TWO failures compounded: (1) the grey close_x
-# template scored only 0.31 on the teal Rocket X, so recovery never closed it;
-# (2) the purple dialog background sits inside the MAP hue window, so classify()
-# said MAP and the loop kept running the detector on (and tapping!) the dialog --
-# dangerously close to the BATTLE button.
-def test_rocket_grunt_is_not_map_and_never_encounter():
-    result = classify(_load("rocket_grunt.png"))
-    assert result != ScreenState.ENCOUNTER   # never throw balls at a grunt
-    assert result != ScreenState.MAP         # never run the map detector on a dialog
+# --- Panel screens that trapped the bot live (each is a real stuck frame) -------
+# rocket_grunt.png: Team GO Rocket grunt dialog on an invaded stop. TWO failures
+# compounded: (1) the grey close_x template scored only 0.31 on the teal Rocket
+# X, so recovery never closed it; (2) the purple dialog background sits inside
+# the MAP hue window, so classify() said MAP and the loop kept running the
+# detector on (and tapping!) the dialog -- dangerously close to BATTLE.
+# route_screen.png: Route detail sheet (tapped a route marker). Its teal-ring X
+# on a light card scored 0.20/0.47 on the earlier templates -> recovery spun.
+@pytest.mark.parametrize("name", ["rocket_grunt.png", "route_screen.png"])
+def test_panel_screens_are_unknown_never_map_or_encounter(name):
+    result = classify(_load(name))
+    assert result != ScreenState.ENCOUNTER   # never throw balls at a panel
+    assert result != ScreenState.MAP         # never run the map detector on one
     assert result == ScreenState.UNKNOWN     # -> _recover, which taps the X
