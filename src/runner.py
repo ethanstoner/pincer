@@ -11,6 +11,7 @@ swipes, and back-presses are only logged, never sent to the phone.
 
 import argparse
 import signal
+import subprocess
 import sys
 import threading
 
@@ -54,6 +55,23 @@ def _select_phones(config, serials):
     return [p for p in config.phones if p.serial in serials]
 
 
+def _connected_serials(adb_path):
+    """Serials currently in the 'device' state per `adb devices` (authorized &
+    online). Empty on any adb error."""
+    try:
+        out = subprocess.run(
+            [adb_path, "devices"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return set()
+    connected = set()
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            connected.add(parts[0])
+    return connected
+
+
 def _make_detector_fn(config):
     """Return the detector callable (img, phone) -> Optional[Target]. Defaults to
     the classical CV detector; uses the trained YOLO model when config selects it.
@@ -80,6 +98,20 @@ def main(argv):
     args = parse_args(argv)
     config = load_config(args.config)
     phones = _select_phones(config, args.phone)
+
+    # On a real run, only spin up phones that are actually connected, so a config
+    # listing both phones works whether one or both are plugged in.
+    if not args.dry_run:
+        connected = _connected_serials(config.adb_path)
+        for p in phones:
+            if p.serial not in connected:
+                print(f"skip {p.serial}: not connected to adb")
+        phones = [p for p in phones if p.serial in connected]
+        if not phones:
+            print("no configured phones are connected; nothing to run.")
+            return
+        print("running phones: " + ", ".join(p.serial for p in phones))
+
     loops = _build_loops(config, phones, args.dry_run)
 
     if args.once:

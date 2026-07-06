@@ -24,6 +24,7 @@ def _make_device_mock():
 
 
 def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
+    n_phones = len(load_config("config.json").phones)
     with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop:
         MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
         loop_instance = MagicMock()
@@ -31,10 +32,11 @@ def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
 
         main(["--config", "config.json", "--dry-run", "--once"])
 
-        # config.json currently defines exactly one phone (DEVICE_SERIAL_B)
-        assert MockDevice.call_count == 1
-        assert MockCatchLoop.call_count == 1
-        loop_instance.tick.assert_called_once()
+        # one Device + one CatchLoop per configured phone (dry-run skips the
+        # adb-connected filter, so every configured phone is built)
+        assert MockDevice.call_count == n_phones
+        assert MockCatchLoop.call_count == n_phones
+        assert loop_instance.tick.call_count == n_phones
 
 
 def test_phone_filter_selects_only_matching_serial():

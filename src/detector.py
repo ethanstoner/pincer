@@ -22,6 +22,7 @@ them.
 
 import math
 import os
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,6 +30,11 @@ import cv2
 import numpy as np
 
 from src.config import Phone
+
+# Serializes save_label across per-phone worker threads: without it, two phones
+# catching at once could read the same _next_label_index and overwrite each
+# other's frame. The critical section (index -> write) is tiny.
+_LABEL_LOCK = threading.Lock()
 
 
 @dataclass
@@ -257,21 +263,20 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
     """
     images_dir = os.path.join(dataset_dir, "images")
     labels_dir = os.path.join(dataset_dir, "labels")
-    os.makedirs(images_dir, exist_ok=True)
-    os.makedirs(labels_dir, exist_ok=True)
-
-    index = _next_label_index(images_dir)
-    stem = f"pokemon_{index:06d}"
-    img_path = os.path.join(images_dir, f"{stem}.png")
-    lbl_path = os.path.join(labels_dir, f"{stem}.txt")
-
     h, w = img.shape[:2]
     bx, by, bw, bh = target.bbox
     cx = (bx + bw / 2.0) / w
     cy = (by + bh / 2.0) / h
 
-    cv2.imwrite(img_path, img)
-    with open(lbl_path, "w") as f:
-        f.write(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
+    with _LABEL_LOCK:  # atomic index+write so 2 phones can't collide
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(labels_dir, exist_ok=True)
+        index = _next_label_index(images_dir)
+        stem = f"pokemon_{index:06d}"
+        img_path = os.path.join(images_dir, f"{stem}.png")
+        lbl_path = os.path.join(labels_dir, f"{stem}.txt")
+        cv2.imwrite(img_path, img)
+        with open(lbl_path, "w") as f:
+            f.write(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
 
     return img_path
