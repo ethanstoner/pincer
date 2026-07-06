@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from src.config import load_config
-from src.detector import propose
+from src.detector import is_gym_photodisc, propose
 
 
 def test_proposes_target_on_real_map():
@@ -43,6 +43,11 @@ def _inside(px, py, box):
     return x <= px <= x + w and y <= py <= y + h
 
 
+def _crop(img, box):
+    x, y, w, h = box
+    return img[y : y + h, x : x + w]
+
+
 def test_target_in_central_region_and_not_gym_avatar_ui():
     cfg = load_config("config.json")
     phone = cfg.phones[0]
@@ -56,3 +61,44 @@ def test_target_in_central_region_and_not_gym_avatar_ui():
     # (b) not inside any known gym / avatar / UI bbox
     for box in GYM_BBOXES + [AVATAR_BBOX] + UI_BBOXES:
         assert not _inside(t.x, t.y, box), f"target landed in excluded box {box}"
+
+
+def test_photodisc_helper_rejects_gym_keeps_pokemon_under_vfx():
+    """Locks the live false-rejection fix: the structural gym/stop filter must
+    reject a solid photodisc but KEEP a real Pokemon crossed by a thin VFX ring.
+    """
+    m = cv2.imread("tests/fixtures/map.png")
+    r0 = cv2.imread("tests/fixtures/radar0.png")
+    r1 = cv2.imread("tests/fixtures/radar1.png")
+
+    # solid gym photodiscs -> must be rejected
+    assert is_gym_photodisc(_crop(m, (228, 1373, 192, 148))) is True   # cand_00
+    assert is_gym_photodisc(_crop(m, (108, 1878, 176, 151))) is True   # cand_01
+    assert is_gym_photodisc(_crop(m, (225, 1562, 142, 89))) is True    # cand_07
+
+    # real Pokemon under a white/purple spinning VFX ring -> must be KEPT.
+    # (raw white-fraction of these crops is 0.226 / 0.227 -- the exact live
+    #  false-rejection this structural filter fixes.)
+    assert is_gym_photodisc(_crop(r0, (611, 1497, 68, 68))) is False
+    assert is_gym_photodisc(_crop(r1, (615, 1495, 71, 63))) is False
+
+
+def test_propose_on_live_radar_scenes():
+    """Dense live scenes (heavy VFX overlays) must still yield a real Pokemon,
+    inside the central region and never a gym/stop photodisc."""
+    cfg = load_config("config.json")
+    phone = cfg.phones[0]
+    # (fixture, a known raid/gym disc bbox the target must avoid)
+    cases = [
+        ("radar0.png", (850, 546, 113, 113)),
+        ("radar1.png", (853, 543, 111, 115)),
+    ]
+    for fname, gym_bbox in cases:
+        img = cv2.imread(f"tests/fixtures/{fname}")
+        t = propose(img, phone)
+        assert t is not None, f"{fname}: dense scene yielded no target"
+        assert 0.10 * phone.width <= t.x <= 0.95 * phone.width
+        assert 0.40 * phone.height <= t.y <= 0.85 * phone.height
+        assert not _inside(t.x, t.y, gym_bbox), f"{fname}: target landed on gym"
+        # the tapped crop is structurally NOT a photodisc
+        assert is_gym_photodisc(_crop(img, t.bbox)) is False

@@ -92,20 +92,59 @@ MAX_AREA = 20000
 MIN_EXTENT = 0.5
 MIN_SOLIDITY = 0.75
 
-# --- Gym / PokeStop photodisc discriminator ---
-# Gyms and PokeStops render a bright WHITE spinning concentric-ring photodisc;
-# Pokemon models do not. Measured fraction of bbox pixels that are bright AND
-# desaturated (V > 200 and S < 60):
-#     gyms/stops with a photodisc: cand_00=0.298, cand_01=0.456, cand_07=0.349
-#     "recenter" Poke Ball UI button:            cand_09=0.224
-#     real Pokemon (max observed):               cand_05=0.133
-#     other real Pokemon:  cand_02=0.043 cand_04=0.013 cand_08=0.022 cand_10=0.014
-# Clean margin between the highest real Pokemon (0.133) and the lowest
-# photodisc blob (0.224). Threshold 0.20 rejects every photodisc gym/stop and
-# the Poke Ball UI while keeping every real Pokemon (0.067 headroom below).
+# --- Gym / PokeStop photodisc discriminator (STRUCTURAL, not a raw pixel count) ---
+# Gyms/PokeStops render a bright white concentric-ring PHOTODISC. A raw
+# white-pixel FRACTION does NOT generalize: live maps have persistent white/
+# purple spinning ring-VFX (event/lure radius circles) that streak across
+# Pokemon sprites and inflate a raw fraction to gym-like levels (measured: a
+# real Pokemon under VFX at radar0 (611,1497,68,68) has raw white frac 0.226,
+# radar1 (615,1495,71,63) has 0.227 -- both above any usable raw threshold).
+#
+# The real difference is STRUCTURAL: a photodisc is one LARGE, COMPACT white
+# blob; a VFX streak is THIN / ELONGATED. So we threshold white pixels
+# (V>200 & S<60), take the LARGEST connected component, and reject only if it
+# is BOTH large AND compact. Measured on the largest white component:
+#   feature = component_area / bbox_area (fill) ; and min-area-rect long/short (aspect)
+#     GYM  cand_00: fill 0.269 aspect 2.30 | cand_01: 0.317 1.16 | cand_07: 0.347 1.60
+#     POKE-UNDER-VFX radar0: fill 0.173 aspect 6.24 | radar1: 0.078 aspect 3.36
+#     POKE  cand_05: 0.103 3.49 | cand_08: 0.010 3.75 | cand_02: 0.014 6.99
+# Both features separate independently:
+#   fill  -> gyms >= 0.269, real <= 0.173  (threshold 0.22, gap 0.096)
+#   aspect-> gyms <= 2.30,  real >= 3.36   (threshold 2.80, gap 1.06)
+# Requiring BOTH (large AND compact) means a Pokemon crossed by a thin streak
+# fails at least one test and is KEPT; only a solid concentric disc trips both.
 WHITE_V_MIN = 200
 WHITE_S_MAX = 60
-WHITE_DISC_MAX = 0.20
+PHOTODISC_FILL_MIN = 0.22    # largest white component must cover >= this share of bbox
+PHOTODISC_ASPECT_MAX = 2.80  # ...and be compact (min-area-rect long/short <= this)
+
+
+def is_gym_photodisc(crop: np.ndarray) -> bool:
+    """True if a candidate crop (BGR) is a gym/PokeStop photodisc that must be
+    rejected. Structural: the largest bright-desaturated connected component
+    must be BOTH large (disc-sized) AND compact (not a thin VFX streak)."""
+    h, w = crop.shape[:2]
+    if h == 0 or w == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    sat, val = hsv[:, :, 1], hsv[:, :, 2]
+    white = ((val > WHITE_V_MIN) & (sat < WHITE_S_MAX)).astype(np.uint8)
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(white, connectivity=8)
+    if n <= 1:  # only background -> no white blob
+        return False
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+
+    fill = stats[largest, cv2.CC_STAT_AREA] / float(w * h)
+    if fill < PHOTODISC_FILL_MIN:  # thin streak / small patch -> not a disc
+        return False
+
+    comp = (labels == largest).astype(np.uint8)
+    contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour = max(contours, key=cv2.contourArea)
+    (_, _), (rw, rh), _ = cv2.minAreaRect(contour)
+    aspect = max(rw, rh) / max(1.0, min(rw, rh))
+    return aspect <= PHOTODISC_ASPECT_MAX  # large AND compact -> reject
 
 
 def _in_range(val, lo_ratio, hi_ratio, dim):
@@ -116,7 +155,7 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
     height, width = img.shape[:2]
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
 
     # Restrict the search to the central region (below top gym/raid band + UI,
     # above bottom button bar, off the left menu strip).
@@ -156,14 +195,10 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
         if solidity < MIN_SOLIDITY:
             continue
 
-        # Reject gym / PokeStop photodiscs (and the Poke Ball UI button) by
-        # their bright, desaturated concentric-ring signature.
-        region_v = val[y : y + h, x : x + w]
-        region_s = sat[y : y + h, x : x + w]
-        white_frac = np.count_nonzero(
-            (region_v > WHITE_V_MIN) & (region_s < WHITE_S_MAX)
-        ) / float(w * h)
-        if white_frac >= WHITE_DISC_MAX:
+        # Reject gym / PokeStop photodiscs by their structural signature (one
+        # large, compact white disc), NOT by a raw white-pixel count -- a thin
+        # spinning VFX ring crossing a Pokemon must not trip this.
+        if is_gym_photodisc(img[y : y + h, x : x + w]):
             continue
 
         cx = x + w / 2.0
