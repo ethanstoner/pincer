@@ -135,6 +135,8 @@ class CatchLoop:
         self._last_target_t = None  # last time the detector found anything
         self._pan_speed = 0.0       # last measured scene pan speed (px/s)
         self._pan_v = None          # smoothed (EMA) pan velocity, px/s
+        self._miss_strikes = []     # [(x, y, expires)] single-miss strikes
+        self._consec_nothing = 0    # taps in a row that had NO effect at all
         # Streamed frames are fresher than pulled ones -> shorter tap lead.
         self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
@@ -496,11 +498,34 @@ class CatchLoop:
                 # Tap did not open an encounter -> back out on the frame we
                 # already have (no extra screencap). INV-1: no throw. The audit
                 # gets the RESULT frame too: "clicked this -> got this panel".
-                # Embargo the spot so the next ticks try OTHER candidates.
-                self._fail_spots.append(
-                    (target.x, target.y, self.clock() + self._FAIL_SPOT_TTL_S)
-                )
                 outcome = self._bail_outcome(bail_img)
+                if outcome == "panel":
+                    # Opened a panel: embargo the spot immediately.
+                    self._fail_spots.append(
+                        (target.x, target.y, self.clock() + self._FAIL_SPOT_TTL_S)
+                    )
+                    self._consec_nothing = 0
+                else:
+                    # A miss ('nothing'/'timeout') with a good-looking detection
+                    # deserves ONE immediate retry (fresh coordinates next tick,
+                    # ~100ms away) -- only a SECOND miss at the same spot gets
+                    # embargoed (live review: detections looked right, taps
+                    # just missed).
+                    tnow = self.clock()
+                    self._miss_strikes = [s for s in self._miss_strikes if s[2] > tnow]
+                    if any(math.hypot(target.x - sx, target.y - sy) <= self._FAIL_SPOT_RADIUS
+                           for sx, sy, _ in self._miss_strikes):
+                        self._fail_spots.append(
+                            (target.x, target.y, tnow + self._FAIL_SPOT_TTL_S))
+                    else:
+                        self._miss_strikes.append((target.x, target.y, tnow + 6.0))
+                    # Taps having NO effect repeatedly = the input shell may be
+                    # wedged (writes silently swallowed). Respawn it.
+                    self._consec_nothing += 1
+                    if (self._consec_nothing >= 4
+                            and hasattr(self.device, "respawn_input")):
+                        self.device.respawn_input()
+                        self._consec_nothing = 0
                 if self.monitor is not None:
                     self.monitor.bump(outcome)
                 if outcome == "panel":
@@ -525,6 +550,7 @@ class CatchLoop:
             # The catch took seconds: restart the camera-pan clock, else the
             # first briefly-empty rescan pans even with spawns still visible.
             self._last_target_t = self.clock()
+            self._consec_nothing = 0  # taps demonstrably work
             if self.monitor is not None:
                 self.monitor.bump("encounter")
 

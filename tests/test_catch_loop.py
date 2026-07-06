@@ -332,25 +332,62 @@ def test_click_logger_records_nothing_outcome_on_empty_tap():
     assert calls["clicks"] == [(target, "nothing")]
 
 
-def test_failed_tap_spot_is_blacklisted_and_not_retapped():
-    # tap yields nothing -> the spot is embargoed: a plain detector (no exclude
-    # support) proposing the SAME spot next tick must NOT be tapped again.
+def test_missed_tap_gets_one_retry_then_blacklist():
+    # A miss with a good detection deserves ONE retry (live: detections were
+    # right, taps just missed); the SECOND miss at the same spot embargoes it.
     classifier = Scripted([ScreenState.MAP])          # sticky map (empty tap)
     target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
     loop, device, _, _ = make_loop(
         classifier, Scripted([False]), detector_fn=lambda img, phone: target
     )
-    loop.tick()                       # tap -> still MAP -> blacklist the spot
-    taps_after_first = len(device.taps)
-    assert taps_after_first == 1
-    loop.tick()                       # same proposal -> embargoed -> no tap
-    assert len(device.taps) == taps_after_first
+    loop.tick()                       # miss #1 -> strike only
+    assert len(device.taps) == 1
+    loop.tick()                       # retry -> miss #2 -> embargo
+    assert len(device.taps) == 2
+    loop.tick()                       # embargoed now -> no third tap
+    assert len(device.taps) == 2
+
+
+def test_panel_tap_blacklists_immediately_no_retry():
+    classifier = Scripted([ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP, ScreenState.MAP])
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), detector_fn=lambda img, phone: target,
+        close_check=lambda img: True,
+    )
+    loop.tick()                       # opened a panel -> immediate embargo
+    map_taps = [t for t in device.taps if abs(t[0] - 500) <= 10 and abs(t[1] - 1200) <= 60]
+    loop.tick()
+    map_taps2 = [t for t in device.taps if abs(t[0] - 500) <= 10 and abs(t[1] - 1200) <= 60]
+    assert len(map_taps2) == len(map_taps)   # never re-tapped the panel spot
+
+
+def test_wedged_input_shell_respawned_after_consecutive_dead_taps():
+    classifier = Scripted([ScreenState.MAP])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]),
+        detector_fn=lambda img, phone: Target(x=400 * (1 + len(device.taps)),
+                                              y=1200,
+                                              bbox=(80, 1180, 40, 40)),
+    )
+    device.respawn_input = MagicMockRespawn()
+    for _ in range(6):                # distinct spots -> all 'nothing'
+        loop.tick()
+    assert device.respawn_input.calls >= 1
+
+
+class MagicMockRespawn:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
 
 
 def test_exclude_zones_passed_to_exclude_aware_detector():
     # An exclude-aware detector receives the embargoed spot and can pick the
     # next-best candidate -- keeps catching while a raid boss is blacklisted.
-    classifier = Scripted([ScreenState.MAP])
+    # (The bad tap opens a PANEL -> immediate embargo, no retry.)
     bad = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
     good = Target(x=800, y=1600, bbox=(780, 1580, 40, 40))
     seen_excludes = []
@@ -363,9 +400,13 @@ def test_exclude_zones_passed_to_exclude_aware_detector():
                 return t
         return None
 
-    loop, device, _, _ = make_loop(Scripted([ScreenState.MAP]), Scripted([False]),
-                                   detector_fn=detector)
-    loop.tick()                                    # taps bad -> blacklists it
+    loop, device, _, _ = make_loop(
+        Scripted([ScreenState.MAP, ScreenState.UNKNOWN, ScreenState.MAP, ScreenState.MAP]),
+        Scripted([False]),
+        detector_fn=detector,
+        close_check=lambda img: True,              # bad tap opens a panel
+    )
+    loop.tick()                                    # taps bad -> panel -> embargo
     loop.tick()                                    # detector must get the zone
     assert seen_excludes[0] == []
     assert len(seen_excludes[1]) == 1              # embargo forwarded

@@ -180,6 +180,19 @@ class Device:
                 time.sleep(0.03)
         return None
 
+    def respawn_input(self):
+        """Kill and rebuild the persistent input shell. The catch loop calls
+        this when taps stop having ANY effect (a wedged device-side shell
+        swallows writes without erroring -- live: one phone kept 'tapping' a
+        Bidoof that never reacted)."""
+        with self._input_lock:
+            if self._input_proc is not None:
+                try:
+                    self._input_proc.kill()
+                except OSError:
+                    pass
+                self._input_proc = None
+
     # --- input: persistent `adb shell` session -----------------------------
     # Spawning a fresh adb process per tap costs ~150-250ms; writing the input
     # command into one long-lived shell costs ~20ms. On any write failure the
