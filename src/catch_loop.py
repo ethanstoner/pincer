@@ -470,12 +470,17 @@ class CatchLoop:
             self.labeler(img, target, self.config.dataset_dir)
             self.click_logger(img, target, "encounter", self.config.dataset_dir,
                               result_img=enc_img)
+            # The catch took seconds: restart the camera-pan clock, else the
+            # first briefly-empty rescan pans even with spawns still visible.
+            self._last_target_t = self.clock()
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter
+            self._last_target_t = None  # camera-pan clock restarts on the map
 
         else:  # POKESTOP, GYM, or UNKNOWN
             self._recover(state, img=img)  # reuse tick's frame: no extra screencap
+            self._last_target_t = None  # camera-pan clock restarts on the map
 
     def run(self, stop_event):
         while not stop_event.is_set():

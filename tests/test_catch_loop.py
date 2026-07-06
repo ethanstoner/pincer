@@ -406,6 +406,23 @@ def test_camera_pans_after_empty_scans_but_not_immediately():
     assert device.taps == []                         # never tapped anything
 
 
+def test_no_camera_pan_right_after_a_catch():
+    # A catch takes seconds; the camera-pan clock must restart afterwards so a
+    # briefly-empty first rescan does NOT pan (live bug: panned after every
+    # catch even with spawns still visible).
+    classifier = Scripted([ScreenState.MAP])
+    target = Target(x=500, y=1200, bbox=(480, 1180, 40, 40))
+    targets = iter([target])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([True]),
+        detector_fn=lambda img, phone: next(targets, None),  # then map is empty
+    )
+    loop.tick()                                   # catches (takes fake seconds)
+    swipes_after_catch = len(device.swipes)       # throw swipes only
+    loop.tick()                                   # first EMPTY rescan
+    assert len(device.swipes) == swipes_after_catch   # no camera pan yet
+
+
 def test_broke_free_rethrows_when_encounter_ui_returns():
     # Ball fails -> the encounter UI (berry icon) reappears -> the next throw
     # must fire as soon as the grace period passes, NOT after the full resolve
