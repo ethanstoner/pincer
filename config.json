@@ -1,0 +1,20 @@
+{
+  "adb_path": "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe\\platform-tools\\adb.exe",
+  "dataset_dir": "dataset",
+  "phones": [
+    { "serial": "DEVICE_SERIAL_B", "width": 1080, "height": 2388 }
+  ],
+  "anchors_ratio": {
+    "ball_center":   [0.50000, 0.88944],
+    "throw_start":   [0.50000, 0.83752],
+    "throw_end":     [0.50000, 0.35595],
+    "flee_button":   [0.04815, 0.06072]
+  },
+  "timing": {
+    "encounter_load_ms": [2000, 2600],
+    "post_throw_ms":     [3800, 4800],
+    "map_scan_ms":       [700, 1300],
+    "stuck_timeout_ms":  15000,
+    "max_throws": 8
+  }
+}

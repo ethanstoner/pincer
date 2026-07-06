@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+dataset/
+*.png
+!tests/fixtures/*.png
+config.local.json
