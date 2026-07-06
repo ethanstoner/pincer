@@ -91,6 +91,13 @@ MAX_AREA = 20000
 # body silhouette (measured extent 0.58-0.66, solidity 0.86-0.90).
 MIN_EXTENT = 0.5
 MIN_SOLIDITY = 0.75
+# Pokemon bodies are roughly compact: measured bbox aspect (long/short side) is
+# ~1.0-1.1 on the radar fixtures and stays <~1.6 across the map fixture. Thin
+# high-saturation STREAKS -- spinning ring edges, lure beams, name-label bars --
+# are very elongated (measured live mis-detections: 21x88 = 4.2, 152x15 = 10.1).
+# Reject anything too elongated to be a Pokemon body. 2.5 leaves headroom for
+# genuinely tall sprites while killing the streaks.
+MAX_ASPECT = 2.5
 
 # --- Gym / PokeStop photodisc discriminator (STRUCTURAL, not a raw pixel count) ---
 # Gyms/PokeStops render a bright white concentric-ring PHOTODISC. A raw
@@ -185,6 +192,10 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
             continue
 
         x, y, w, h = cv2.boundingRect(contour)
+        aspect = max(w, h) / max(1, min(w, h))
+        if aspect > MAX_ASPECT:  # thin streak (ring edge / lure beam / label) -> not a Pokemon
+            continue
+
         extent = area / (w * h)
         if extent < MIN_EXTENT:
             continue
