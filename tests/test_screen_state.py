@@ -100,9 +100,20 @@ def test_encounter_anchor_score_margin():
 #     can bail instead of waiting out the encounter timeout. Must fire on BOTH
 #     gym (dark theme) and PokeStop (light theme) -- a gym-only template got stuck
 #     on PokeStops. ---
-@pytest.mark.parametrize("name", ["gym.png", "pokestop.png", "rocket_grunt.png", "route_screen.png"])
+@pytest.mark.parametrize("name", ["gym.png", "pokestop.png", "rocket_grunt.png", "route_screen.png", "friends_popup.png"])
 def test_has_close_button_true_on_closable_panels(name):
     assert has_close_button(_load(name)) is True
+
+
+def test_friends_popup_x_wins_over_lucky_egg_pill():
+    """Live frame: the Great-Friends popup has BOTH a teal close-X (route-theme
+    template scores 1.00) and a wide teal USE LUCKY EGG pill that the OK-finder
+    matches. has_close_button MUST be True here -- recovery's X-before-OK
+    ordering is what stops the bot from consuming a Lucky Egg."""
+    from src.screen_state import find_ok_button
+    img = _load("friends_popup.png")
+    assert has_close_button(img) is True     # X recognized -> X path taken
+    assert find_ok_button(img) is not None   # the egg pill IS OK-like (danger)
 
 @pytest.mark.parametrize("name", ["map.png", "map_after_catch.png", "encounter.png", "encounter_dusk.png"])
 def test_has_close_button_false_off_panel(name):
