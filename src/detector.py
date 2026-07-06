@@ -55,7 +55,11 @@ class Target:
 # the region), while every labeled real Pokemon centroid falls inside the band.
 SEARCH_X_LOW = 0.10
 SEARCH_X_HIGH = 0.95
-SEARCH_Y_LOW = 0.40
+# Top edge was 0.40 when the ONLY gym defense was this region cut; live recall
+# eval showed real catchable Pokemon walking just above it. Now that gyms,
+# badges and tower-toppers have dedicated semantic rejectors, the band opens
+# to 0.33 (still below the top raid/status strip and both fixed UI buttons).
+SEARCH_Y_LOW = 0.33
 SEARCH_Y_HIGH = 0.85
 
 # --- Avatar reference + exclusion box ---
@@ -86,17 +90,23 @@ OPEN_KERNEL = np.ones((5, 5), np.uint8)
 CLOSE_KERNEL = np.ones((15, 15), np.uint8)
 
 # --- Contour shape filters ---
-# Measured plausible Pokemon blob area on the fixture: ~2200-4700 px^2. Below
-# ~1200 survivors were UI/PokeStop fragments or partial occlusions; nothing
-# plausible was observed above ~20000.
-MIN_AREA = 1200
+# Measured plausible Pokemon blob area on the fixture: ~2200-4700 px^2, but
+# the live camera TILTS while walking and distant Pokemon shrink well below
+# the old 1200 floor (recall eval: most "small" rejects in tilted frames were
+# real Pokemon). 800 recovers them; sub-800 specks are petals/cube fragments.
+MIN_AREA = 800
 MAX_AREA = 20000
 # extent = area / bbox area, solidity = area / hull area. Both are LOW for the
 # gym photodiscs, radial light rays, and the humanoid avatar (measured
 # extent 0.19-0.35, solidity 0.37-0.62) and HIGH for a Pokemon's roughly-solid
-# body silhouette (measured extent 0.58-0.66, solidity 0.86-0.90).
-MIN_EXTENT = 0.5
-MIN_SOLIDITY = 0.75
+# body silhouette (measured extent 0.58-0.66 for compact bodies -- but live
+# recall eval caught a real DRAGONITE at extent <0.5: wings/limbs leave the
+# bbox mostly empty). 0.40 keeps winged/limbed Pokemon while staying above the
+# 0.35 ceiling measured for disc rays / the avatar. Solidity: junk measured
+# <= 0.62, compact Pokemon >= 0.86; 0.68 recovers VFX-crossed bodies (live
+# recall eval: a Fearow and a Krabby died at 0.75) with margin over junk.
+MIN_EXTENT = 0.40
+MIN_SOLIDITY = 0.68
 # Pokemon bodies are roughly compact: measured bbox aspect (long/short side) is
 # ~1.0-1.1 on the radar fixtures and stays <~1.6 across the map fixture. Thin
 # high-saturation STREAKS -- spinning ring edges, lure beams, name-label bars --
