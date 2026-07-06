@@ -211,6 +211,20 @@ def test_clear_click_audit_removes_only_clicks(tmp_path):
     assert (d / "images" / "pokemon_000000.png").exists()  # training data kept
 
 
+def test_bottom_ui_strip_is_unreachable_even_for_vivid_blobs():
+    """The pokeball menu button (bottom-centre, ~y-ratio 0.94) and the whole
+    bottom UI bar sit BELOW the search region (SEARCH_Y_HIGH=0.85): even a
+    perfectly Pokemon-like vivid blob painted there must never be proposed."""
+    cfg = load_config("config.json")
+    phone = cfg.phones[0]
+    img = cv2.imread("tests/fixtures/map.png").copy()
+    cv2.circle(img, (540, 2245), 45, (0, 0, 230), -1)   # vivid red blob on the pokeball
+    t = propose(img, phone)
+    if t is not None:
+        assert t.y <= 0.85 * phone.height   # whatever it picked, not bottom UI
+        assert abs(t.x - 540) > 60 or abs(t.y - 2245) > 60
+
+
 def test_propose_on_live_radar_scenes():
     """Dense live scenes (heavy VFX overlays) must still yield a real Pokemon,
     inside the central region and never a gym/stop photodisc."""
