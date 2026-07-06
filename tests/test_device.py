@@ -23,31 +23,56 @@ def test_key_back_builds_correct_adb_command():
         args = run.call_args[0][0]
         assert args == ["adb.exe","-s","SERIAL","shell","input","keyevent","4"]
 
-def test_screencap_decodes_png_bytes():
-    png = cv2.imencode(".png", np.zeros((4,4,3), np.uint8))[1].tobytes()
+def test_decode_raw_parses_rgba_with_16byte_header():
+    import struct
+    w, h = 2, 2
+    header = struct.pack("<IIII", w, h, 1, 1)            # 16-byte header (Android 12+)
+    pixels = bytes([10, 20, 30, 255] * (w * h))          # RGBA
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run:
-        run.return_value = MagicMock(stdout=png)
-        img = dev.screencap()
-        assert img.shape == (4,4,3)
+    with open(dev._local_cap, "wb") as fh:
+        fh.write(header + pixels)
+    img = dev._decode_raw()
+    assert img.shape == (h, w, 3)
+    assert list(img[0, 0]) == [30, 20, 10]               # RGBA(10,20,30) -> BGR(30,20,10)
 
-def test_screencap_retries_on_truncated_png():
-    # Live "libpng error: PNG input buffer is incomplete" -> imdecode None.
-    # First read returns truncated bytes (decodes to None), second read is a
-    # valid PNG. screencap must retry and return the valid image.
-    truncated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8   # header only -> imdecode None
-    valid = cv2.imencode(".png", np.zeros((4,4,3), np.uint8))[1].tobytes()
+def test_decode_raw_returns_none_on_truncated_buffer():
+    import struct
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run, patch("src.device.time.sleep"):
-        run.side_effect = [MagicMock(stdout=truncated), MagicMock(stdout=valid)]
+    with open(dev._local_cap, "wb") as fh:
+        fh.write(struct.pack("<IIII", 100, 100, 1, 1) + b"\x00" * 16)  # far too short
+    assert dev._decode_raw() is None
+
+def test_screencap_returns_image_when_capture_succeeds():
+    dev = Device("SERIAL", "adb.exe")
+    valid = np.zeros((4, 4, 3), np.uint8)
+    with patch("src.device.subprocess.run"), \
+         patch.object(Device, "_decode_raw", return_value=valid):
+        assert dev.screencap().shape == (4, 4, 3)
+
+def test_screencap_retries_on_failed_decode():
+    # A truncated pull decodes to None; screencap must retry and return the next
+    # valid image.
+    dev = Device("SERIAL", "adb.exe")
+    valid = np.zeros((4, 4, 3), np.uint8)
+    with patch("src.device.subprocess.run"), \
+         patch.object(Device, "_decode_raw", side_effect=[None, valid]) as dec, \
+         patch("src.device.time.sleep"):
         img = dev.screencap()
         assert img is not None
-        assert img.shape == (4,4,3)
-        assert run.call_count == 2   # proves it retried once
+        assert dec.call_count == 2   # proves it retried once
 
 def test_screencap_returns_none_if_all_retries_fail():
-    truncated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
     dev = Device("SERIAL", "adb.exe")
-    with patch("src.device.subprocess.run") as run, patch("src.device.time.sleep"):
-        run.return_value = MagicMock(stdout=truncated)
+    with patch("src.device.subprocess.run"), \
+         patch.object(Device, "_decode_raw", return_value=None), \
+         patch("src.device.time.sleep"):
         assert dev.screencap() is None
+
+def test_screencap_survives_hung_adb_via_timeout():
+    # A hung adb call raises TimeoutExpired; screencap must swallow it and return
+    # None instead of propagating (this is the freeze-the-whole-loop bug).
+    import subprocess as sp
+    dev = Device("SERIAL", "adb.exe")
+    with patch("src.device.subprocess.run", side_effect=sp.TimeoutExpired("adb", 3)), \
+         patch("src.device.time.sleep"):
+        assert dev.screencap() is None   # returns None, does NOT raise
