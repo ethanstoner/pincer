@@ -24,8 +24,11 @@ def _make_device_mock():
 
 
 def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
+    # _make_detector_fn is patched out: the live config may select the YOLO
+    # detector, whose ultralytics dependency lives only in the training venv.
     n_phones = len(load_config("config.json").phones)
-    with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop:
+    with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop, \
+         patch("src.runner._make_detector_fn", return_value=None):
         MockDevice.side_effect = lambda serial, adb_path: _make_device_mock()
         loop_instance = MagicMock()
         MockCatchLoop.return_value = loop_instance
@@ -40,7 +43,8 @@ def test_once_dry_run_builds_one_loop_per_phone_and_ticks():
 
 
 def test_phone_filter_selects_only_matching_serial():
-    with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop:
+    with patch("src.runner.Device") as MockDevice, patch("src.runner.CatchLoop") as MockCatchLoop, \
+         patch("src.runner._make_detector_fn", return_value=None):
         main(["--config", "config.json", "--phone", "NONEXISTENT", "--once", "--dry-run"])
 
         assert MockDevice.call_count == 0
