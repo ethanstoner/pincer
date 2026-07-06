@@ -229,6 +229,24 @@ def test_tighten_bbox_drops_merged_badge_keeps_pokemon_side():
     assert tw >= 85 and th >= 85                              # ~whole blob kept
 
 
+def test_max_pill_flags_dynamax_spawn_not_normal_pokemon():
+    """Live dynamax frame: the old pick (fragment of the max spawn, with the
+    red player pill inside its box) must be flagged; a normal Pokemon box on
+    another frame must not. End-to-end: propose() on the dynamax frame must
+    not land inside the spawn area."""
+    from src.detector import has_max_pill_near
+    d = cv2.imread("tests/fixtures/map_dynamax.png")
+    assert has_max_pill_near(d, 769, 1194, 197, 158) is True    # the max spawn
+    g = cv2.imread("tests/fixtures/map_gym_badges.png")
+    assert has_max_pill_near(g, 350, 1775, 103, 124) is False   # green Pokemon
+
+    cfg = load_config("config.json")
+    t = propose(d, cfg.phones[0])
+    if t is not None:
+        # spawn zone = pill + body region around the old bad pick
+        assert not _inside(t.x, t.y, (700, 1100, 340, 420))
+
+
 def test_bottom_ui_strip_is_unreachable_even_for_vivid_blobs():
     """The pokeball menu button (bottom-centre, ~y-ratio 0.94) and the whole
     bottom UI bar sit BELOW the search region (SEARCH_Y_HIGH=0.85): even a

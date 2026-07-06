@@ -290,6 +290,52 @@ def is_pink_badge(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
     return False
 
 
+# --- Max-battle spawn detector: the red "N players" pill ----------------------
+# Dynamax/max-battle spawns (giant Chansey etc.) are Pokemon MODELS, so no
+# body-shape rule separates them (measured: contiguous-component size gave NO
+# gap vs dense-scene wild spawns). Their unique tell is UI: a COREL-RED rounded
+# "N players" pill hangs on/over the spawn. Measured pill pixels: hue ~1,
+# sat ~160, val ~235 -- a flat wide bar (w>=80, aspect>=1.8, fill>=0.5).
+# Candidate has one in/near its box -> it's part of a max spawn -> reject.
+# Measured: flags both live giant-Chansey picks; 4/162 confirmed catches were
+# near enough to a pill to be skipped (acceptable recall tax vs ~2 panel
+# round-trips per minute near a spawn).
+_PILL_SAT = (120, 210)
+_PILL_VAL_MIN = 200
+_PILL_MIN_W = 80
+_PILL_MIN_H = 28
+_PILL_MIN_ASPECT = 1.8
+_PILL_MIN_FILL = 0.5
+
+
+def has_max_pill_near(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
+    """True if a red max-battle player-count pill sits in / near the candidate
+    bbox (searched 1.5*w sideways, 2.5*h up/down -- the pill floats over the
+    spawn's body, which the candidate is usually a fragment of)."""
+    H, W = img.shape[:2]
+    x0, y0 = max(0, x - int(1.5 * w)), max(0, y - int(2.5 * h))
+    x1, y1 = min(W, x + w + int(1.5 * w)), min(H, y + h + int(2.5 * h))
+    crop = img[y0:y1, x0:x1]
+    if crop.size == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    # hue <= 8 ONLY (no wrap-around branch): the player pill is pure red
+    # (measured hue ~1); the magenta "233 days" countdown pill sits at hue
+    # ~178 and must NOT trip this -- it also hangs near ordinary gyms.
+    red = ((hue <= 8)
+           & (sat > _PILL_SAT[0]) & (sat < _PILL_SAT[1])
+           & (val > _PILL_VAL_MIN)).astype(np.uint8)
+    red = cv2.morphologyEx(red, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(red, connectivity=8)
+    for i in range(1, n):
+        cw, ch, ca = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
+        if (cw >= _PILL_MIN_W and ch >= _PILL_MIN_H
+                and cw / max(1, ch) >= _PILL_MIN_ASPECT and ca >= _PILL_MIN_FILL * cw * ch):
+            return True
+    return False
+
+
 def is_flat_badge(crop: np.ndarray) -> bool:
     """True if a candidate crop (BGR) is a flat single-hue UI element -- a raid
     badge, elite-raid badge, countdown pill, or spin-arrow -- that must be
@@ -403,6 +449,10 @@ def propose(img: np.ndarray, phone: Phone, exclude=None) -> Optional[Target]:
 
         # Reject the pink elite-raid badge (template match at this location).
         if is_pink_badge(img, x, y, w, h):
+            continue
+
+        # Reject anything under a red max-battle player pill (dynamax spawn).
+        if has_max_pill_near(img, x, y, w, h):
             continue
 
         cx = x + w / 2.0
