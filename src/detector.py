@@ -80,11 +80,17 @@ AVATAR_EXCL_Y = (0.57, 0.66)
 # Measured interior saturation on the fixture: median ~140, 75th pct ~157 (0-255
 # scale). The map background is itself fairly saturated blue/teal (hue ~90-130),
 # so saturation alone can't separate it from Pokemon -- hue must also be
-# restricted. Measured: ~70% of high-saturation interior pixels fall in hue
-# 90-120 (the blue/teal map + roads), so we exclude that hue band.
+# restricted. The FIXED band below covers the night-blue map; the in-game DAY
+# cycle turns terrain GREEN (hue ~40-70), which flooded the mask with grass
+# blobs (live: 121 empty taps in 14 min). propose() therefore ALSO excludes the
+# frame's DOMINANT hue bands measured per frame (_dynamic_bg_bands): terrain
+# always dominates pixel count, Pokemon never do, so this adapts to day/night/
+# storm palettes automatically. The static band stays as a floor.
 SAT_THRESHOLD = 150
 BG_HUE_LOW = 85
 BG_HUE_HIGH = 135
+BG_DYNAMIC_MODES = 2     # exclude the top-N dominant hues of the search region
+BG_DYNAMIC_TOL = 12      # +/- band around each dominant hue
 
 # --- Morphology ---
 # 5x5 open removes tiny specks (cherry-blossom lure particles, sparkles).
@@ -366,6 +372,25 @@ def has_gym_below(img: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
     return is_gym_photodisc(ext)
 
 
+def _dynamic_bg_bands(hue: np.ndarray, region_mask: np.ndarray) -> list:
+    """Top-N dominant hues of the search region (the terrain), to be excluded
+    from the foreground mask. Suppresses +/-(2*tol) around each found mode
+    before finding the next so both modes aren't the same band."""
+    hues = hue[region_mask > 0]
+    if hues.size == 0:
+        return []
+    hist = np.bincount(hues.ravel(), minlength=180).astype(float)
+    bands, idx = [], np.arange(180)
+    for _ in range(BG_DYNAMIC_MODES):
+        mode = int(hist.argmax())
+        if hist[mode] <= 0:
+            break
+        bands.append(mode)
+        d = np.minimum(np.abs(idx - mode), 180 - np.abs(idx - mode))
+        hist[d <= 2 * BG_DYNAMIC_TOL] = 0
+    return bands
+
+
 def _in_range(val, lo_ratio, hi_ratio, dim):
     return lo_ratio * dim <= val <= hi_ratio * dim
 
@@ -389,7 +414,11 @@ def propose(img: np.ndarray, phone: Phone, exclude=None) -> Optional[Target]:
     x0, x1 = int(SEARCH_X_LOW * width), int(SEARCH_X_HIGH * width)
     search_mask[y0:y1, x0:x1] = 255
 
-    not_bg_hue = ((hue < BG_HUE_LOW) | (hue > BG_HUE_HIGH)).astype(np.uint8) * 255
+    not_bg = (hue < BG_HUE_LOW) | (hue > BG_HUE_HIGH)
+    for mode in _dynamic_bg_bands(hue, search_mask):
+        d = np.minimum(np.abs(hue.astype(int) - mode), 180 - np.abs(hue.astype(int) - mode))
+        not_bg &= d > BG_DYNAMIC_TOL
+    not_bg_hue = not_bg.astype(np.uint8) * 255
     high_sat = (sat > SAT_THRESHOLD).astype(np.uint8) * 255
     colorful = cv2.bitwise_and(not_bg_hue, high_sat)
     colorful = cv2.bitwise_and(colorful, colorful, mask=search_mask)
