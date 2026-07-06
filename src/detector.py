@@ -3,11 +3,21 @@
 `propose()` does NOT decide whether a tap actually opens an encounter -- the
 catch_loop taps the proposed pixel and re-checks screen_state afterward; only
 a confirmed ENCOUNTER counts. This module's only job is to point at a pixel
-that plausibly has a wild Pokemon on it.
+that plausibly has a *catchable wild Pokemon* on it -- never a gym, PokeStop,
+the player avatar, or a UI button.
 
-Thresholds below were measured empirically against tests/fixtures/map.png
-(1080x2388, an extremely crowded lure-party map). See comments at each
-constant for the measured values that motivated them.
+Design decisions (from user QA on tests/fixtures/map.png, a permanent
+mega-spawn / lure-party map that is ALWAYS this crowded):
+  - Pure center-region CV, no radar. There is basically always a real Pokemon
+    right next to the avatar, so we search a central band around it.
+  - Gyms/raids cluster in the TOP third; catchable Pokemon cluster in the
+    CENTER around the avatar. So the search region starts BELOW the top band.
+  - Gyms/PokeStops carry a bright WHITE spinning concentric-ring photodisc;
+    Pokemon models do not. That white-disc fraction is a measured discriminator.
+
+All thresholds below were measured empirically against map.png (1080x2388).
+See comments at each constant for the measured values + margins that motivate
+them.
 """
 
 import math
@@ -28,32 +38,38 @@ class Target:
     bbox: tuple  # (x, y, w, h)
 
 
-# --- UI exclusion ratios (regions of the screen that are never a Pokemon) ---
-# Given/known regions:
-LEFT_UI_RATIO = 0.10          # the client menu + nearby-list strip
-BOTTOM_UI_RATIO = 0.85        # avatar/ball/binoculars button bar
-TOP_UI_RATIO = 0.07           # status/clock bar
-# Measured on the fixture: a fixed the client joystick/quick-action cluster
-# (compass arrow + red/white "recenter" pokeball button) sits at roughly
-# ratio (0.92, 0.12) and (0.92, 0.24) -- both are small, solid, saturated
-# circular icons that otherwise pass the color+shape filters below just like
-# a real Pokemon blob would. Exclude that corner.
-TOPRIGHT_UI_X_RATIO = 0.90
-TOPRIGHT_UI_Y_RATIO = 0.30
+# --- Central detection region (ratios of width/height) ---
+# x: left edge past the the client menu / nearby-list strip (< 0.10 w); right edge
+#    trimmed at 0.95 w. y: TOP boundary 0.40 h drops the whole top gym/raid band
+#    AND both fixed UI buttons (the "recenter" Poke Ball at y-ratio ~0.24 and
+#    the rocket/compass arrow at y-ratio ~0.12 -- measured cand_09/cand_11);
+#    BOTTOM boundary 0.85 h drops the avatar/ball/binoculars button bar.
+# Verified on map.png: all four QA-labeled gyms sit at y-ratio 0.47-0.82 (inside
+# this band, so they are rejected by the shape+photodisc filters below, not by
+# the region), while every labeled real Pokemon centroid falls inside the band.
+SEARCH_X_LOW = 0.10
+SEARCH_X_HIGH = 0.95
+SEARCH_Y_LOW = 0.40
+SEARCH_Y_HIGH = 0.85
 
-# Avatar reference point (used only for ranking candidates by proximity).
+# --- Avatar reference + exclusion box ---
+# Proximity anchor (given): the player avatar sits ~ ratio (0.42, 0.55).
 AVATAR_RATIO = (0.42, 0.55)
+# The avatar MODEL (a humanoid trainer standing on the PokeStop) occupies a
+# tight box around screen-center (measured cand_06 bbox = (487,1412,103,106),
+# centroid ratio ~ (0.50, 0.61)). A candidate whose centroid falls inside this
+# box is the avatar itself and is rejected. Kept tight so the real Pokemon
+# immediately to its right (measured centroid ratio ~ (0.58, 0.61)) survives.
+AVATAR_EXCL_X = (0.44, 0.56)
+AVATAR_EXCL_Y = (0.57, 0.66)
 
 # --- Color thresholds ---
-# Measured interior (non-UI) saturation on the fixture: median ~140,
-# 75th pct ~157, 90th pct ~178 (0-255 scale). The map background itself is
-# fairly saturated blue/teal (hue ~90-130), so saturation alone can't
-# separate background from Pokemon -- hue must also be restricted.
+# Measured interior saturation on the fixture: median ~140, 75th pct ~157 (0-255
+# scale). The map background is itself fairly saturated blue/teal (hue ~90-130),
+# so saturation alone can't separate it from Pokemon -- hue must also be
+# restricted. Measured: ~70% of high-saturation interior pixels fall in hue
+# 90-120 (the blue/teal map + roads), so we exclude that hue band.
 SAT_THRESHOLD = 150
-# Hue band (OpenCV 0-179 scale) covering the desaturated-but-still-quite-
-# saturated blue/teal map/road color; Pokemon models are excluded from this
-# band far more often than they fall inside it. Measured: ~70% of
-# high-saturation interior pixels on the fixture fall in hue 90-120.
 BG_HUE_LOW = 85
 BG_HUE_HIGH = 135
 
@@ -63,41 +79,52 @@ BG_HUE_HIGH = 135
 OPEN_KERNEL = np.ones((5, 5), np.uint8)
 CLOSE_KERNEL = np.ones((15, 15), np.uint8)
 
-# --- Contour filters ---
-# Measured on the fixture: plausible Pokemon blobs land at areas
-# ~2200-4700 px^2. Below ~1200 px^2 survivors were UI/PokeStop fragments or
-# ambiguous partial occlusions; above ~20000 nothing plausible was observed
-# (the crowded PokeStop disc itself is ~6800 px^2 but is rejected below by
-# its shape, not its area).
+# --- Contour shape filters ---
+# Measured plausible Pokemon blob area on the fixture: ~2200-4700 px^2. Below
+# ~1200 survivors were UI/PokeStop fragments or partial occlusions; nothing
+# plausible was observed above ~20000.
 MIN_AREA = 1200
 MAX_AREA = 20000
-# extent = contour area / bbox area, solidity = contour area / hull area.
-# Both are LOW for rings, radial light rays, and the humanoid player avatar
-# (measured extent ~0.19-0.35, solidity ~0.37-0.62) and HIGH for a Pokemon's
-# roughly-solid body silhouette (measured extent ~0.58-0.66, solidity
-# ~0.86-0.90). This is what actually separates real Pokemon blobs from the
-# PokeStop disc, the avatar model, and spinning UI icons -- color alone
-# could not.
+# extent = area / bbox area, solidity = area / hull area. Both are LOW for the
+# gym photodiscs, radial light rays, and the humanoid avatar (measured
+# extent 0.19-0.35, solidity 0.37-0.62) and HIGH for a Pokemon's roughly-solid
+# body silhouette (measured extent 0.58-0.66, solidity 0.86-0.90).
 MIN_EXTENT = 0.5
 MIN_SOLIDITY = 0.75
 
+# --- Gym / PokeStop photodisc discriminator ---
+# Gyms and PokeStops render a bright WHITE spinning concentric-ring photodisc;
+# Pokemon models do not. Measured fraction of bbox pixels that are bright AND
+# desaturated (V > 200 and S < 60):
+#     gyms/stops with a photodisc: cand_00=0.298, cand_01=0.456, cand_07=0.349
+#     "recenter" Poke Ball UI button:            cand_09=0.224
+#     real Pokemon (max observed):               cand_05=0.133
+#     other real Pokemon:  cand_02=0.043 cand_04=0.013 cand_08=0.022 cand_10=0.014
+# Clean margin between the highest real Pokemon (0.133) and the lowest
+# photodisc blob (0.224). Threshold 0.20 rejects every photodisc gym/stop and
+# the Poke Ball UI while keeping every real Pokemon (0.067 headroom below).
+WHITE_V_MIN = 200
+WHITE_S_MAX = 60
+WHITE_DISC_MAX = 0.20
 
-def _build_search_mask(width: int, height: int) -> np.ndarray:
-    mask = np.full((height, width), 255, np.uint8)
-    mask[:, : int(LEFT_UI_RATIO * width)] = 0
-    mask[int(BOTTOM_UI_RATIO * height) :, :] = 0
-    mask[: int(TOP_UI_RATIO * height), :] = 0
-    mask[: int(TOPRIGHT_UI_Y_RATIO * height), int(TOPRIGHT_UI_X_RATIO * width) :] = 0
-    return mask
+
+def _in_range(val, lo_ratio, hi_ratio, dim):
+    return lo_ratio * dim <= val <= hi_ratio * dim
 
 
 def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
     height, width = img.shape[:2]
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+    hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
 
-    search_mask = _build_search_mask(width, height)
+    # Restrict the search to the central region (below top gym/raid band + UI,
+    # above bottom button bar, off the left menu strip).
+    search_mask = np.zeros((height, width), np.uint8)
+    y0, y1 = int(SEARCH_Y_LOW * height), int(SEARCH_Y_HIGH * height)
+    x0, x1 = int(SEARCH_X_LOW * width), int(SEARCH_X_HIGH * width)
+    search_mask[y0:y1, x0:x1] = 255
+
     not_bg_hue = ((hue < BG_HUE_LOW) | (hue > BG_HUE_HIGH)).astype(np.uint8) * 255
     high_sat = (sat > SAT_THRESHOLD).astype(np.uint8) * 255
     colorful = cv2.bitwise_and(not_bg_hue, high_sat)
@@ -129,8 +156,23 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
         if solidity < MIN_SOLIDITY:
             continue
 
+        # Reject gym / PokeStop photodiscs (and the Poke Ball UI button) by
+        # their bright, desaturated concentric-ring signature.
+        region_v = val[y : y + h, x : x + w]
+        region_s = sat[y : y + h, x : x + w]
+        white_frac = np.count_nonzero(
+            (region_v > WHITE_V_MIN) & (region_s < WHITE_S_MAX)
+        ) / float(w * h)
+        if white_frac >= WHITE_DISC_MAX:
+            continue
+
         cx = x + w / 2.0
         cy = y + h / 2.0
+
+        # Reject the player avatar's own box (screen-center trainer model).
+        if _in_range(cx, *AVATAR_EXCL_X, width) and _in_range(cy, *AVATAR_EXCL_Y, height):
+            continue
+
         dist = math.hypot(cx - avatar_x, cy - avatar_y)
         if best_dist is None or dist < best_dist:
             best_dist = dist
