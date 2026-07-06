@@ -89,7 +89,9 @@ AVATAR_EXCL_Y = (0.57, 0.66)
 SAT_THRESHOLD = 150
 BG_HUE_LOW = 85
 BG_HUE_HIGH = 135
-BG_DYNAMIC_MODES = 2     # exclude the top-N dominant hues of the search region
+BG_DYNAMIC_MODES = 3     # exclude the top-N dominant hues of the search region
+                         # (3: the DAY palette has light+dark grass AND paths;
+                         # 2 modes left grass-speck junk -> 511 empty taps/30min)
 BG_DYNAMIC_TOL = 12      # +/- band around each dominant hue
 
 # --- Morphology ---
