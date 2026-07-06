@@ -30,6 +30,7 @@ from src.detector import save_negative_label as _save_negative_label
 from src.screen_state import ScreenState
 from src.screen_state import classify as _classify
 from src.screen_state import has_close_button as _has_close_button
+from src.screen_state import has_map_pokeball as _has_map_pokeball
 from src.screen_state import in_encounter as _in_encounter
 from src.screen_state import is_screen_off as _is_screen_off
 
@@ -65,6 +66,7 @@ class CatchLoop:
         rng=None,
         encounter_check=_in_encounter,
         close_check=_has_close_button,
+        pokeball_check=_has_map_pokeball,
         clock=time.monotonic,
     ):
         self.device = device
@@ -79,6 +81,7 @@ class CatchLoop:
         self.rng = rng if rng is not None else random.Random()
         self.encounter_check = encounter_check
         self.close_check = close_check
+        self.pokeball_check = pokeball_check
         self.clock = clock
         self._fail_spots = []  # [(x, y, expires_at)] recent failed-tap embargo
         try:
@@ -212,7 +215,13 @@ class CatchLoop:
                 continue
             if self.classifier(frame) in playable:
                 return
-            if self.close_check(frame) or attempt >= self._BLIND_CLOSE_AFTER:
+            # Blind tap only when this is NOT secretly the map: the overworld
+            # pokeball button sits right beside the X spot, so blind-tapping a
+            # map frame that mis-classified as UNKNOWN (petal-dense hue drift)
+            # would open the MAIN MENU. Pokeball visible => map => never blind.
+            blind_ok = (attempt >= self._BLIND_CLOSE_AFTER
+                        and not self.pokeball_check(frame))
+            if self.close_check(frame) or blind_ok:
                 # Recognized X theme -> tap it. OR: the screen stayed
                 # un-playable through the early waits with NO template match --
                 # every closable PoGo panel (gym / stop / menu / Rocket / Route)

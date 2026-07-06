@@ -187,6 +187,37 @@ def has_close_button(img: np.ndarray) -> bool:
     return close_button_score(img) >= _CLOSE_THRESHOLD
 
 
+# --- overworld pokeball menu button (bottom-centre) ----------------------------
+# The main-menu pokeball button is ALWAYS visible on the overworld map and is
+# REPLACED by the close-X on every panel. It sits right next to the universal
+# X spot, so _recover's blind tap could open the main menu whenever a real map
+# frame mis-classified as UNKNOWN (petal-dense scenes throw off the hue check).
+# Guard: pokeball visible => we're on the map => blind tap FORBIDDEN.
+# Measured (threshold 0.85): all map/radar fixtures 1.000 (one 0.24 outlier
+# where a spawn model occludes the button -- blind-tapping there would hit that
+# Pokemon, which is fine); panels/encounters <= 0.69.
+_MAP_POKEBALL_THRESHOLD = 0.85
+_MAP_POKEBALL_ANCHOR = ("map_pokeball.png", 0.500, 0.9401, 42)
+
+
+def _load_map_pokeball_template():
+    path = os.path.join(_TEMPLATE_DIR, _MAP_POKEBALL_ANCHOR[0])
+    templ = cv2.imread(path)
+    if templ is None:
+        raise FileNotFoundError(f"map pokeball template missing: {path}")
+    return templ
+
+
+_MAP_POKEBALL_TEMPLATE = _load_map_pokeball_template()
+
+
+def has_map_pokeball(img: np.ndarray) -> bool:
+    """True iff the overworld pokeball menu button is visible bottom-centre --
+    i.e. this frame is the map, whatever the hue check said."""
+    _, cxr, cyr, half = _MAP_POKEBALL_ANCHOR
+    return _anchor_score(img, _MAP_POKEBALL_TEMPLATE, cxr, cyr, half) >= _MAP_POKEBALL_THRESHOLD
+
+
 def is_screen_off(img: np.ndarray) -> bool:
     """True if the frame is a blank/near-black display-off screen.
 

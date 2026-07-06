@@ -77,12 +77,13 @@ def make_config():
     )
 
 
-def make_loop(classifier, encounter_check, device=None, detector_fn=None, labeler=None, close_check=None):
+def make_loop(classifier, encounter_check, device=None, detector_fn=None, labeler=None, close_check=None, pokeball_check=None):
     config = make_config()
     phone = config.phones[0]
     device = device or FakeDevice()
     detector_fn = detector_fn or (lambda img, phone: None)
     close_check = close_check or (lambda img: False)
+    pokeball_check = pokeball_check or (lambda img: False)
     calls = {"labels": [], "clicks": [], "neg_labels": []}
 
     def default_labeler(img, target, dataset_dir):
@@ -118,6 +119,7 @@ def make_loop(classifier, encounter_check, device=None, detector_fn=None, labele
         rng=random.Random(42),
         encounter_check=encounter_check,
         close_check=close_check,
+        pokeball_check=pokeball_check,
         clock=lambda: clock["t"],
     )
     return loop, device, calls, sleeps
@@ -216,6 +218,20 @@ def test_recover_blind_taps_close_spot_when_no_theme_matches():
     loop._recover()
     assert loop._pt("close_button") in device.taps  # escalated to the blind tap
     assert device.swipes == []                      # INV-2: still never throws
+
+
+def test_blind_tap_suppressed_when_map_pokeball_visible():
+    # A map frame that mis-classifies as UNKNOWN (petal-dense hue drift) must
+    # NOT be blind-tapped: the X spot is right beside the pokeball MENU button,
+    # so that tap would open the main menu. Pokeball visible => no blind tap.
+    classifier = Scripted([ScreenState.UNKNOWN])   # stuck-looking forever
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]),
+        close_check=lambda img: False,
+        pokeball_check=lambda img: True,           # but the pokeball IS there
+    )
+    loop._recover()
+    assert device.taps == []                       # waited, never tapped
 
 
 def test_recover_does_not_blind_tap_transient_unknowns_that_resolve():

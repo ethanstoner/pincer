@@ -7,6 +7,16 @@ from src.screen_state import (
 )
 
 
+def test_map_pokeball_visible_on_map_absent_on_panels():
+    from src.screen_state import has_map_pokeball
+    for name in ["map.png", "map_after_catch.png", "radar0.png", "radar1.png",
+                 "map_gym_badges.png", "map_dynamax.png"]:
+        assert has_map_pokeball(_load(name)) is True, name
+    for name in ["gym.png", "pokestop.png", "rocket_grunt.png", "route_screen.png",
+                 "encounter.png", "encounter_dusk.png"]:
+        assert has_map_pokeball(_load(name)) is False, name
+
+
 def test_is_screen_off_true_on_black():
     assert is_screen_off(np.zeros((2388, 1080, 3), np.uint8)) is True
 
