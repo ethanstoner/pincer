@@ -163,9 +163,10 @@ def test_no_target_no_tap_no_swipe_no_label():
     assert len(sleeps) >= 1  # scan wait happened
 
 
-def test_stubborn_pokemon_hits_throw_cap_then_flees():
+def test_stubborn_pokemon_hits_throw_cap_then_yields_without_fleeing():
     # Enters mid-encounter; classify NEVER returns MAP (never caught) and
-    # in_encounter stays True -> throws until the cap, then flees.
+    # in_encounter stays True -> throws until the per-tick cap, then RETURNS
+    # without fleeing (the next tick would keep throwing). "Never give up."
     classifier = Scripted([ScreenState.ENCOUNTER])  # initial ENCOUNTER, never MAP
     encounter_check = Scripted([True])              # always still in encounter
 
@@ -175,7 +176,7 @@ def test_stubborn_pokemon_hits_throw_cap_then_flees():
 
     max_throws = loop.config.timing["max_throws"]
     assert len(device.swipes) == max_throws
-    assert device.taps == [loop._pt("flee_button")]   # fled after the cap
+    assert device.taps == []       # did NOT flee -- keeps the encounter for next tick
 
 
 def test_recover_on_pokestop_then_map():

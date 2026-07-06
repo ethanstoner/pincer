@@ -152,11 +152,10 @@ class CatchLoop:
             if got_map:
                 return  # caught / returned to map
 
-        # Cap reached and still in an encounter -> give up on this Pokemon.
-        img = self.device.screencap()
-        if img is not None and self.encounter_check(img):
-            self.device.tap(*self._pt("flee_button"))
-            self._poll_until_map()
+        # Cap reached but still an encounter: do NOT flee. Just yield this tick.
+        # The next tick re-detects the same encounter and keeps throwing, so a
+        # stubborn Pokemon is thrown at until it's caught (or runs on its own).
+        # max_throws is only a per-tick bound so run() can check stop_event.
 
     # --- one iteration -----------------------------------------------------
     def tick(self):
