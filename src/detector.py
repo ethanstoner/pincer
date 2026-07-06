@@ -440,6 +440,44 @@ def _next_label_index(images_dir: str, prefix: str = "pokemon_") -> int:
     return highest + 1
 
 
+# Label tightening: the segmentation CLOSE morphology can merge a Pokemon with
+# an ADJACENT flat-magenta UI badge (dynamax/elite-raid disc + countdown pill)
+# into one blob -- the tap still lands and the catch confirms, but the saved
+# YOLO box then spans badge+Pokemon (bad supervision). Before writing a label,
+# shrink the box to the largest colorful component that is NOT badge-magenta.
+# Magenta only: the badge pink is a narrow flat band; orange is NOT excluded
+# here (orange Pokemon are common, the orange badge rarely adjoins spawns).
+_BADGE_MAGENTA_HUE = (158, 176)
+_BADGE_MAGENTA_SAT_MIN = 180
+_TIGHTEN_MIN_KEEP = 0.20  # tightened part must keep >=20% of box area, else keep box
+
+
+def tighten_bbox(img: np.ndarray, bbox: tuple) -> tuple:
+    """Shrink a label bbox to the largest non-badge colorful component. Returns
+    the original bbox when nothing meaningful remains (e.g. an actually-pink
+    Pokemon whose body IS magenta-ish)."""
+    x, y, w, h = bbox
+    crop = img[y : y + h, x : x + w]
+    if crop.size == 0:
+        return bbox
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+    colorful = (((hue < BG_HUE_LOW) | (hue > BG_HUE_HIGH)) & (sat > SAT_THRESHOLD))
+    badge = ((hue >= _BADGE_MAGENTA_HUE[0]) & (hue <= _BADGE_MAGENTA_HUE[1])
+             & (sat >= _BADGE_MAGENTA_SAT_MIN))
+    keep = (colorful & ~badge).astype(np.uint8)
+    keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(keep, connectivity=8)
+    if n <= 1:
+        return bbox
+    li = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    bx, by = stats[li, cv2.CC_STAT_LEFT], stats[li, cv2.CC_STAT_TOP]
+    bw, bh = stats[li, cv2.CC_STAT_WIDTH], stats[li, cv2.CC_STAT_HEIGHT]
+    if bw * bh < _TIGHTEN_MIN_KEEP * w * h:
+        return bbox  # too little left -> the box was probably fine (pink mon)
+    return (x + bx, y + by, bw, bh)
+
+
 def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
     """Save a YOLO training example from a CONFIRMED catch: the FULL map frame
     plus a one-box label (class 0 = wild Pokemon) at the target. Called on every
@@ -455,7 +493,7 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
     images_dir = os.path.join(dataset_dir, "images")
     labels_dir = os.path.join(dataset_dir, "labels")
     h, w = img.shape[:2]
-    bx, by, bw, bh = target.bbox
+    bx, by, bw, bh = tighten_bbox(img, target.bbox)  # drop merged-in UI badges
     cx = (bx + bw / 2.0) / w
     cy = (by + bh / 2.0) / h
 

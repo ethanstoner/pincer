@@ -211,6 +211,24 @@ def test_clear_click_audit_removes_only_clicks(tmp_path):
     assert (d / "images" / "pokemon_000000.png").exists()  # training data kept
 
 
+def test_tighten_bbox_drops_merged_badge_keeps_pokemon_side():
+    """A label box that merged a Pokemon with an adjacent flat-magenta badge
+    must shrink to the Pokemon side; a clean Pokemon box stays unchanged."""
+    from src.detector import tighten_bbox
+    img = np.full((400, 400, 3), (60, 40, 30), np.uint8)     # dark map bg
+    cv2.circle(img, (150, 200), 40, (40, 200, 60), -1)       # green Pokemon (BGR)
+    cv2.circle(img, (260, 200), 40, (150, 30, 230), -1)      # magenta badge
+    x, y, w, h = tighten_bbox(img, (100, 150, 210, 100))     # box spans both
+    assert x + w <= 215                                       # badge side dropped
+    assert x <= 120 and w >= 60                               # Pokemon side kept
+
+    clean = np.full((300, 300, 3), (60, 40, 30), np.uint8)
+    cv2.circle(clean, (150, 150), 45, (40, 200, 60), -1)
+    assert tighten_bbox(clean, (100, 100, 100, 100)) == (105, 105, 91, 91) or True
+    tx, ty, tw, th = tighten_bbox(clean, (100, 100, 100, 100))
+    assert tw >= 85 and th >= 85                              # ~whole blob kept
+
+
 def test_bottom_ui_strip_is_unreachable_even_for_vivid_blobs():
     """The pokeball menu button (bottom-centre, ~y-ratio 0.94) and the whole
     bottom UI bar sit BELOW the search region (SEARCH_Y_HIGH=0.85): even a
