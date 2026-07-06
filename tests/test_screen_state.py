@@ -17,6 +17,17 @@ def test_map_pokeball_visible_on_map_absent_on_panels():
         assert has_map_pokeball(_load(name)) is False, name
 
 
+def test_find_ok_button_on_dialog_none_on_map_screens():
+    from src.screen_state import find_ok_button
+    pt = find_ok_button(_load("dialog_ok.png"))    # Groudon bonus popup (live)
+    assert pt is not None
+    x, y = pt
+    assert abs(x - 525) < 60 and abs(y - 2040) < 60
+    for name in ["map.png", "map_purple_storm.png", "encounter.png",
+                 "gym.png", "pokestop.png", "map_dynamax.png"]:
+        assert find_ok_button(_load(name)) is None, name
+
+
 def test_is_screen_off_true_on_black():
     assert is_screen_off(np.zeros((2388, 1080, 3), np.uint8)) is True
 

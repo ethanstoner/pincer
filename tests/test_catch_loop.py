@@ -234,6 +234,32 @@ def test_blind_tap_suppressed_when_map_pokeball_visible():
     assert device.taps == []                       # waited, never tapped
 
 
+def test_recover_taps_ok_button_on_xless_dialog():
+    # A bonus popup has NO X, only a wide OK pill -> recovery taps the pill.
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.UNKNOWN, ScreenState.MAP])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), close_check=lambda img: False,
+    )
+    loop.ok_finder = lambda img: (540, 2040)
+    loop._recover()
+    assert (540, 2040) in device.taps
+    assert device.swipes == []                     # INV-2 intact
+
+
+def test_recover_prefers_close_x_over_battle_like_pill():
+    # SAFETY: the Rocket grunt dialog has BOTH a close X and a teal BATTLE
+    # pill that matches the OK-pill profile. Recovery must tap the X, NEVER
+    # the pill (that would start a Rocket battle).
+    classifier = Scripted([ScreenState.UNKNOWN, ScreenState.MAP])
+    loop, device, _, _ = make_loop(
+        classifier, Scripted([False]), close_check=lambda img: True,
+    )
+    loop.ok_finder = lambda img: (540, 1726)       # "BATTLE" pill location
+    loop._recover()
+    assert loop._pt("close_button") in device.taps  # tapped the X
+    assert (540, 1726) not in device.taps           # never the battle pill
+
+
 def test_recover_does_not_blind_tap_transient_unknowns_that_resolve():
     # UNKNOWN for one attempt (e.g. catch animation) then MAP: must resolve by
     # waiting -- no blind tap fired before the escalation threshold.

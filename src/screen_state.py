@@ -218,6 +218,45 @@ def has_map_pokeball(img: np.ndarray) -> bool:
     return _anchor_score(img, _MAP_POKEBALL_TEMPLATE, cxr, cyr, half) >= _MAP_POKEBALL_THRESHOLD
 
 
+# --- OK-button dialogs (bonus popups / notices) --------------------------------
+# Some full-screen dialogs have NO close-X at all -- just one wide teal-green
+# "OK" pill (live catch: the "Groudon Primal Reversion Bonus" popup trapped a
+# phone). Detection is color+structure: hue 50-90, sat 60-190, val>190
+# (measured on the live pill: hue 55-81, sat 82-175, val 208-218), one
+# component at least 45% of screen width, wide (aspect>=3), solid (fill>=0.55),
+# in the lower 45% of the screen. Two-button confirm dialogs use ~35%-width
+# side-by-side pills, so the width floor keeps this from ever "accepting"
+# anything -- it only fires on single-button info dialogs.
+_OK_HUE = (50, 90)
+_OK_SAT = (60, 190)
+_OK_VAL_MIN = 190
+_OK_MIN_WIDTH_RATIO = 0.45
+_OK_MIN_ASPECT = 3.0
+_OK_MIN_FILL = 0.55
+_OK_Y_LOW = 0.55
+
+
+def find_ok_button(img: np.ndarray):
+    """Centre (x, y) of a single wide OK pill in the lower screen, or None."""
+    h, w = img.shape[:2]
+    y0 = int(_OK_Y_LOW * h)
+    crop = img[y0:, :]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    mask = ((hue >= _OK_HUE[0]) & (hue <= _OK_HUE[1])
+            & (sat >= _OK_SAT[0]) & (sat <= _OK_SAT[1])
+            & (val >= _OK_VAL_MIN)).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((11, 11), np.uint8))
+    n, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    for i in range(1, n):
+        cw, ch, ca = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
+        if (cw >= _OK_MIN_WIDTH_RATIO * w and cw / max(1, ch) >= _OK_MIN_ASPECT
+                and ca >= _OK_MIN_FILL * cw * ch):
+            cx, cy = centroids[i]
+            return int(cx), int(cy) + y0
+    return None
+
+
 def is_screen_off(img: np.ndarray) -> bool:
     """True if the frame is a blank/near-black display-off screen.
 
