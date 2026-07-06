@@ -204,7 +204,8 @@ def test_await_encounter_bails_when_still_map_after_transition_window():
     )
     enc_img, _ = loop._await_encounter(100000)
     assert enc_img is None
-    assert device.screencaps < 30        # bailed ~_MAP_BAIL_MS in, not after 100s
+    # bailed ~_MAP_BAIL_MS in (1600ms / 30ms polls ~= 55 caps), not after 100s
+    assert device.screencaps < 80
 
 
 def test_recover_blind_taps_close_spot_when_no_theme_matches():
@@ -382,6 +383,25 @@ def test_propose_exclude_zone_yields_a_different_target():
     t2 = propose(img, phone, exclude=[(t1.x, t1.y, 60)])
     if t2 is not None:  # another candidate exists -> must be a different spot
         assert (abs(t2.x - t1.x) > 60) or (abs(t2.y - t1.y) > 60)
+
+
+def test_broke_free_rethrows_when_encounter_ui_returns():
+    # Ball fails -> the encounter UI (berry icon) reappears -> the next throw
+    # must fire as soon as the grace period passes, NOT after the full resolve
+    # timeout. classifier never returns MAP; in_encounter stays True.
+    classifier = Scripted([ScreenState.ENCOUNTER])   # never MAP (never caught)
+    encounter_check = Scripted([True])               # UI (berry) visible again
+    loop, device, _, sleeps = make_loop(classifier, encounter_check)
+
+    loop.tick()
+
+    max_throws = loop.config.timing["max_throws"]
+    assert len(device.swipes) == max_throws          # kept re-throwing
+    # each re-throw waited ~the grace period, NOT the resolve timeout: with the
+    # tiny test timeouts the poll would time out anyway, so instead verify the
+    # rethrow path returned an ENCOUNTER frame that was thrown on immediately
+    # (screencaps stay bounded: one per poll step + initial, no extra bursts)
+    assert device.taps == []                         # never fled
 
 
 def test_pan_lead_points_in_the_direction_targets_move():

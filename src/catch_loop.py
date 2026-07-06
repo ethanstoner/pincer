@@ -40,7 +40,9 @@ from src.screen_state import is_screen_off as _is_screen_off
 
 
 class CatchLoop:
-    _POLL_INTERVAL_MS = 80    # how often we re-check while polling (rapid-fire)
+    _POLL_INTERVAL_MS = 30    # how often we re-check while polling. Frames are
+                              # ~free with the stream (1.3ms vs 600ms pulls), so
+                              # fast polling notices every transition ~sooner.
     _TAP_JITTER_PX = 5
     _SWIPE_JITTER_PX = 5
     _THROW_DURATION_MS_RANGE = (120, 180)
@@ -70,6 +72,8 @@ class CatchLoop:
     _PAN_MIN_RESPONSE = 0.03      # confidence floor: feature-poor day grass
                                   # correlates weakly (<0.1) yet the shift is
                                   # real; the speed window bounds bad leads
+    _RETHROW_GRACE_MS = 700       # post-throw window where encounter UI still
+                                  # showing does NOT mean broke-free yet
     _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
                                       # (1.2s misfiled slow day encounter loads as 'nothing')
 
@@ -337,14 +341,25 @@ class CatchLoop:
             throws += 1
             img = None  # force a fresh screencap for the next iteration's re-check
 
-            # Wait for the result: caught -> back to MAP; broke free -> still an
-            # encounter once the shake animation ends. Poll instead of sleeping.
-            _, got_map = self._poll(
-                lambda im: self.classifier(im) == ScreenState.MAP,
-                resolve_timeout_ms,
-            )
-            if got_map:
-                return  # caught / returned to map
+            # Wait for EITHER resolution: caught -> back to MAP; broke free ->
+            # the encounter UI (berry/ball buttons) reappears once the shake
+            # animation ends -- and the NEXT ball flies on that very frame
+            # instead of waiting out the timeout (Ethan: "the second the berry
+            # icon appears you can throw another one"). The grace period stops
+            # the pre-throw UI from being mistaken for a broke-free.
+            start = self.clock()
+
+            def _resolved(im):
+                if self.classifier(im) == ScreenState.MAP:
+                    return True
+                return ((self.clock() - start) * 1000.0 >= self._RETHROW_GRACE_MS
+                        and self.encounter_check(im))
+
+            frame, ok = self._poll(_resolved, resolve_timeout_ms)
+            if ok and frame is not None:
+                if self.classifier(frame) == ScreenState.MAP:
+                    return  # caught / returned to map
+                img = frame  # broke free, UI is back -> re-throw on this frame
 
         # Cap reached but still an encounter: do NOT flee. Just yield this tick.
         # The next tick re-detects the same encounter and keeps throwing, so a
