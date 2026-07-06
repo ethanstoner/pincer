@@ -189,6 +189,8 @@ class CatchLoop:
             img = self.device.screencap()
             if img is not None:
                 last_img = img
+                if self.monitor is not None:
+                    self.monitor.publish_raw(img)  # keep the live feed smooth
                 if predicate(img):
                     return img, True
             if (self.clock() - start) * 1000.0 >= timeout_ms:

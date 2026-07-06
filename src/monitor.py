@@ -51,13 +51,12 @@ async function refresh() {
       card = document.createElement('div');
       card.className = 'phone'; card.id = 'card-' + serial;
       card.innerHTML = `<h2>${serial} <span class="paused-badge" id="pb-${serial}"></span></h2>
-        <img id="img-${serial}" src="/frame/${serial}.jpg">
+        <img id="img-${serial}" src="/stream/${serial}.mjpg">
         <div class="stats" id="stats-${serial}"></div>
         <button onclick="ctl('${serial}','resume')">Resume</button>
         <button class="pause" onclick="ctl('${serial}','pause')">Pause</button>`;
       root.appendChild(card);
     }
-    document.getElementById('img-' + serial).src = '/frame/' + serial + '.jpg?t=' + Date.now();
     document.getElementById('pb-' + serial).textContent = s.paused ? ' — PAUSED' : '';
     document.getElementById('stats-' + serial).textContent =
       `state: ${s.state}   detector: ${s.src}\\n` +
@@ -107,6 +106,13 @@ class PhoneMonitor:
             self.pan_speed = round(pan_speed, 1)
             if note:
                 self.note = note
+
+    def publish_raw(self, img):
+        """Frame-only update (keeps the last state text) -- called from inside
+        polling loops so the live feed stays smooth during encounters."""
+        small = cv2.resize(img, (img.shape[1] // 3, img.shape[0] // 3))
+        with self.lock:
+            self.frame = small
 
     def bump(self, outcome):
         if outcome == "encounter":
@@ -174,6 +180,32 @@ class MonitorServer:
                         self._send(404, "text/plain", b"no frame yet")
                     else:
                         self._send(200, "image/jpeg", data)
+                elif path.startswith("/stream/") and path.endswith(".mjpg"):
+                    # MJPEG push: one connection, ~15fps, no client polling.
+                    serial = path[len("/stream/"):-len(".mjpg")]
+                    pm = phones.get(serial)
+                    if pm is None:
+                        self._send(404, "text/plain", b"unknown phone")
+                        return
+                    self.send_response(200)
+                    self.send_header(
+                        "Content-Type",
+                        "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    try:
+                        while True:
+                            data = pm.jpeg()
+                            if data is not None:
+                                self.wfile.write(b"--frame\r\n")
+                                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                                self.wfile.write(
+                                    f"Content-Length: {len(data)}\r\n\r\n".encode())
+                                self.wfile.write(data)
+                                self.wfile.write(b"\r\n")
+                            time.sleep(1 / 15)
+                    except (ConnectionError, OSError):
+                        return  # viewer closed the tab
                 else:
                     self._send(404, "text/plain", b"not found")
 

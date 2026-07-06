@@ -97,11 +97,21 @@ def _make_detector_fn(config):
         from src.detector_yolo import YoloDetector
 
         yolo = YoloDetector(config.yolo_model_path)
+        empty_streak = {}  # per-phone consecutive YOLO-empty scans
 
         def hybrid(img, phone, exclude=None):
             target = yolo.propose(img, phone)
             if target is not None:
+                empty_streak[phone.serial] = 0
                 return target
+            # CV only after YOLO stayed empty for a few consecutive scans:
+            # scans are ~100ms apart now, so a transient model miss is covered
+            # by the next frame instead of a junky CV tap (live: blank-space
+            # clicks in day palette all came from instant CV fallback).
+            n = empty_streak.get(phone.serial, 0) + 1
+            empty_streak[phone.serial] = n
+            if n < 3:
+                return None
             return _cv_propose(img, phone, exclude=exclude)
 
         return hybrid
