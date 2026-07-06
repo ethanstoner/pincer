@@ -16,6 +16,8 @@ class Config:
     phones: list[Phone]
     anchors_ratio: dict
     timing: dict
+    detector: str = "cv"            # "cv" (classical) or "yolo"
+    yolo_model_path: str = ""       # path to trained best.pt / .onnx when detector == "yolo"
 
 
 def load_config(path):
@@ -28,6 +30,8 @@ def load_config(path):
         phones=phones,
         anchors_ratio=data["anchors_ratio"],
         timing=data["timing"],
+        detector=data.get("detector", "cv"),
+        yolo_model_path=data.get("yolo_model_path", ""),
     )
 
 

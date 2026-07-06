@@ -227,9 +227,11 @@ def propose(img: np.ndarray, phone: Phone) -> Optional[Target]:
     return best_target
 
 
-def _next_label_index(dataset_dir: str) -> int:
+def _next_label_index(images_dir: str) -> int:
+    if not os.path.isdir(images_dir):
+        return 0
     highest = -1
-    for name in os.listdir(dataset_dir):
+    for name in os.listdir(images_dir):
         stem, ext = os.path.splitext(name)
         if ext.lower() != ".png" or not stem.startswith("pokemon_"):
             continue
@@ -242,18 +244,34 @@ def _next_label_index(dataset_dir: str) -> int:
 
 
 def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
-    os.makedirs(dataset_dir, exist_ok=True)
+    """Save a YOLO training example from a CONFIRMED catch: the FULL map frame
+    plus a one-box label (class 0 = wild Pokemon) at the target. Called on every
+    confirmed encounter, so normal operation accumulates real, correctly-labeled
+    training data. Layout: `<dataset>/images/<stem>.png` + `<dataset>/labels/
+    <stem>.txt` (YOLO format `class cx cy w h`, all normalized 0-1). Returns the
+    image path.
 
-    index = _next_label_index(dataset_dir)
+    (The confirmed box is ground truth -- the tap DID open an encounter -- so
+    every saved frame has at least one correct Pokemon box. Other Pokemon in the
+    same frame stay unlabeled; enough frames average that sparsity out.)
+    """
+    images_dir = os.path.join(dataset_dir, "images")
+    labels_dir = os.path.join(dataset_dir, "labels")
+    os.makedirs(images_dir, exist_ok=True)
+    os.makedirs(labels_dir, exist_ok=True)
+
+    index = _next_label_index(images_dir)
     stem = f"pokemon_{index:06d}"
-    png_path = os.path.join(dataset_dir, f"{stem}.png")
-    txt_path = os.path.join(dataset_dir, f"{stem}.txt")
+    img_path = os.path.join(images_dir, f"{stem}.png")
+    lbl_path = os.path.join(labels_dir, f"{stem}.txt")
 
-    x, y, w, h = target.bbox
-    crop = img[y : y + h, x : x + w]
-    cv2.imwrite(png_path, crop)
+    h, w = img.shape[:2]
+    bx, by, bw, bh = target.bbox
+    cx = (bx + bw / 2.0) / w
+    cy = (by + bh / 2.0) / h
 
-    with open(txt_path, "w") as f:
-        f.write(f"{x} {y} {w} {h}\n")
+    cv2.imwrite(img_path, img)
+    with open(lbl_path, "w") as f:
+        f.write(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
 
-    return png_path
+    return img_path

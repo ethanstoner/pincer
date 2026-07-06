@@ -6,3 +6,8 @@ dataset/
 !tests/fixtures/*.png
 !src/templates/*.png
 config.local.json
+experiments/
+training/runs/
+training/yolo_data/
+training/_dataset.yaml
+yolo11n.pt

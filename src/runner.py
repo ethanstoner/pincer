@@ -54,13 +54,25 @@ def _select_phones(config, serials):
     return [p for p in config.phones if p.serial in serials]
 
 
+def _make_detector_fn(config):
+    """Return the detector callable (img, phone) -> Optional[Target]. Defaults to
+    the classical CV detector; uses the trained YOLO model when config selects it.
+    One model instance is shared across phones."""
+    if config.detector == "yolo" and config.yolo_model_path:
+        from src.detector_yolo import YoloDetector
+        return YoloDetector(config.yolo_model_path).propose
+    return None  # None -> CatchLoop uses its default CV propose
+
+
 def _build_loops(config, phones, dry_run):
+    detector_fn = _make_detector_fn(config)
     loops = []
     for phone in phones:
         device = Device(phone.serial, config.adb_path)
         if dry_run:
             device = DryRunDevice(device)
-        loops.append(CatchLoop(device, config, phone))
+        kwargs = {"detector_fn": detector_fn} if detector_fn else {}
+        loops.append(CatchLoop(device, config, phone, **kwargs))
     return loops
 
 

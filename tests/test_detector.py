@@ -1,8 +1,37 @@
+import os
+
 import cv2
 import numpy as np
 
 from src.config import load_config
-from src.detector import is_gym_photodisc, propose
+from src.detector import is_gym_photodisc, propose, save_label, Target
+
+
+def test_save_label_writes_full_frame_and_yolo_label(tmp_path):
+    img = np.zeros((2388, 1080, 3), np.uint8)
+    target = Target(x=440, y=1150, bbox=(432, 1140, 108, 120))  # center (486,1200)
+    ds = str(tmp_path / "dataset")
+
+    path = save_label(img, target, ds)
+
+    # full frame saved (not a crop)
+    saved = cv2.imread(path)
+    assert saved.shape == (2388, 1080, 3)
+    assert path.replace("\\", "/").endswith("images/pokemon_000000.png")
+
+    # YOLO label: class cx cy w h, normalized 0-1
+    lbl = os.path.join(ds, "labels", "pokemon_000000.txt")
+    parts = open(lbl).read().split()
+    assert parts[0] == "0"
+    cls, cx, cy, w, h = parts
+    assert abs(float(cx) - 486 / 1080) < 1e-3
+    assert abs(float(cy) - 1200 / 2388) < 1e-3
+    assert abs(float(w) - 108 / 1080) < 1e-3
+    assert abs(float(h) - 120 / 2388) < 1e-3
+
+    # index advances on the next save
+    p2 = save_label(img, target, ds)
+    assert p2.replace("\\", "/").endswith("images/pokemon_000001.png")
 
 
 def test_proposes_target_on_real_map():
