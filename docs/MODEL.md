@@ -11,7 +11,7 @@ Single-frame object detection on the game map screenshots (1080×2388, portrait)
 | Class | ID | Meaning | Agent behavior |
 |-------|----|---------|----------------|
 | `pokemon` | 0 | A wild Pokémon sprite on the map | **Act on** — candidate tap target |
-| `avoid`   | 1 | A UI element / landmark hitbox (gym, PokéStop, power spot, Rocket, Route marker) | **Never tapped** — used to steer the tap point *away* |
+| `avoid`   | 1 | A UI element / landmark hitbox (gym, gym Pokémon, PokéStop, power spot, Rocket, raid icon, **player avatar / buddy**) | **Never tapped** — used to steer the tap point *away* |
 
 The agent only ever acts on class-0 boxes. Class 1 exists so the model learns the
 distractors that a naive detector taps by mistake, and so the tap-point selector can
@@ -22,7 +22,9 @@ place the tap on the target *farthest from* any nearby `avoid` box.
 Collected entirely by the system operating on real devices — a **self-supervised data
 flywheel** rather than a hand-annotated corpus.
 
-- **5,445 labeled frames** — **4,589** `pokemon` boxes + **1,533** `avoid` boxes.
+- **5,417 labeled frames**, backed by **2,238 human review votes** (each Good/Bad+reason
+  vote either corrects an auto-label or adds a hard case — including a dedicated
+  `player`/avatar reason for a common mis-tap).
 - **Positive labels** are written automatically on every confirmed catch (the tapped
   box is known-good ground truth).
 - **Negative (`avoid`) labels** are written automatically whenever a tap opens a menu
@@ -60,17 +62,35 @@ validation bar — the running agent never regresses silently.
 
 ## Metrics (held-out validation)
 
-Live model (`runs/pokemon`, YOLO11s, 80 epochs, 1280 px):
+Both models below are scored on the **same, current** validation split. That split has
+since been **hardened**: it now includes the human-verified dense/cluttered frames from
+the review UI — a much tougher and more representative bar than the sparse, mostly
+single-target auto-labeled val behind earlier figures. Absolute scores are therefore
+lower than, and **not comparable to**, the pre-hardening numbers; what matters is the
+head-to-head on the identical modern split.
 
-| Metric | Value |
-|--------|-------|
-| mAP@50 | **0.84** |
-| mAP@50–95 | **0.66** |
-| Precision | **0.81** |
-| Recall | **0.77** |
+Live model (`runs/pokemon`, YOLO11s, 80 epochs, 1280 px) vs. the model it replaced:
 
-Inference latency ~5–10 ms on the RTX 4090 — negligible next to the ~1.3 ms frame
-capture and the game's own animation timing, which dominate the end-to-end loop.
+| Metric | Prior model | **Live model** | Δ |
+|--------|-------------|----------------|-----|
+| mAP@50 | 0.487 | **0.524** | +0.037 |
+| mAP@50–95 | 0.400 | **0.401** | ~ |
+| Precision | 0.681 | **0.629** | −0.052 |
+| Recall | 0.478 | **0.541** | **+0.063 (+13%)** |
+
+The live model trades a little precision for meaningfully higher **recall** — the right
+call here: the agent's job is to *find* spawns, and the `avoid` class plus the tap-point
+selector absorb the extra false positives. On **dense frames** (≥3 spawns) it detects
+**+27–38% more** Pokémon than the prior model at equal confidence — the specific failure
+mode ("clearly-visible spawns left un-tapped in crowded scenes") this retrain targeted.
+
+The comparison is *conservative*: the prior model trained on a different split and had
+seen some of these val frames, so its scores are if anything optimistic — the live model
+wins anyway. New models are swapped in only after clearing this bar; the previous weights
+are retained as `best_prev.pt` for instant rollback.
+
+Inference latency ~5–10 ms on the RTX 4090 — negligible next to frame capture and the
+game's own animation timing, which dominate the end-to-end loop.
 
 ## Alternatives considered
 

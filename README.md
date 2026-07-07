@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-EE4C2C?logo=pytorch&logoColor=white)
 ![YOLO11](https://img.shields.io/badge/detector-YOLO11-00BFA6)
-![mAP@50](https://img.shields.io/badge/mAP%4050-0.84-orange)
+![val recall](https://img.shields.io/badge/val%20recall-0.54%20%E2%86%9113%25-brightgreen)
 ![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen)
 
 </div>
@@ -24,7 +24,7 @@ Built from scratch in Python: real-time video pipeline, on-device actuation, a c
 
 ## Highlights
 
-- **Fine-tuned object detector.** YOLO11-small trained on the project's own data reaches **mAP@50 = 0.84, precision 0.81, recall 0.77** on a held-out validation split (1080×2388 phone frames, 1280px inference). Two classes — `pokemon` (act on) and `avoid` (hard-negative UI/landmark hitboxes) — so the agent learns not just *what to hit* but *what to leave alone*.
+- **Fine-tuned object detector.** YOLO11-small trained on the project's own data. On a deliberately **hardened** held-out split (human-verified dense/cluttered frames), the current model reaches **recall 0.54 / mAP@50 0.52** — and beats the model it replaced by **+13% recall** on that same split (**+27–38%** on the densest frames). Two classes — `pokemon` (act on) and `avoid` (hard-negative UI/landmark hitboxes, incl. the player avatar) — so the agent learns not just *what to hit* but *what to leave alone*.
 - **Self-supervised data flywheel.** The agent labels its own training data: every confirmed success writes a YOLO-format frame, and every mis-tap that opens a menu writes a hard-negative `avoid` box. Running the bot *is* the data-collection campaign — the dataset grew from ~2 frames to **5,445 labeled frames (4,589 target + 1,533 negative boxes)** just by operating.
 - **Human-in-the-loop review UI.** A browser voting interface turns every tap into a labeled card (Good / Bad + reason). Verified votes flow straight back into the dataset as ground-truth positives, negatives, and recall labels — the correction loop that drives each retrain.
 - **Sub-millisecond perception.** A continuous H.264 stream (`adb screenrecord` piped into a PyAV decode thread) cut per-frame capture from **~600 ms to ~1.3 ms**; a persistent input shell cut each tap from **~200 ms to ~20 ms**. The result is animation-bound, near the physical floor.
@@ -53,21 +53,27 @@ The choice of a purpose-trained YOLO was itself an experiment: a 3B-parameter op
 
 ## Benchmarks
 
-Live model (YOLO11s, held-out validation):
+Live model vs. the model it replaced, scored on the **same current** validation split.
+That split is **hardened** — it now includes the human-verified dense/cluttered frames
+from the review UI, so absolute scores are lower than (and not comparable to) earlier
+sparse-val figures. What matters is the head-to-head on this tougher, more representative
+bar:
 
-| Metric | Value |
-|--------|-------|
-| mAP@50 | **0.84** |
-| mAP@50–95 | **0.66** |
-| Precision | **0.81** |
-| Recall | **0.77** |
-| Inference latency | ~5–10 ms (RTX 4090) |
-| End-to-end catch | ~5.3 s, back-to-back |
+| Metric | Prior model | **Live model** | Δ |
+|--------|-------------|----------------|-----|
+| mAP@50 | 0.487 | **0.524** | +0.037 |
+| mAP@50–95 | 0.400 | **0.401** | ~ |
+| Precision | 0.681 | **0.629** | −0.052 |
+| Recall | 0.478 | **0.541** | **+0.063 (+13%)** |
+| Dense-frame detections (≥3 spawns) | baseline | **+27–38%** | ↑ |
+| Inference latency | ~5–10 ms (RTX 4090) | ~5–10 ms | — |
 
-> 📊 **Expanded stats coming.** A retrain on the full 5,445-frame, 2-class dataset is in
-> progress; once it's gated, this section will carry the updated model metrics plus live
-> operational figures (catch rate, empty-tap %, panel-tap %, catches/hour). See
-> [`ROADMAP.md`](ROADMAP.md).
+The retrain (full **5,417-frame**, 2-class dataset with **2,238** review votes + dense
+oversampling) deliberately traded a little precision for **recall** — the agent's job is
+to *find* spawns, and the `avoid` class soaks up the false positives. It's swapped in only
+after clearing this bar, with the prior weights kept as `best_prev.pt` for rollback. See
+[`docs/MODEL.md`](docs/MODEL.md) for the full model card and [`ROADMAP.md`](ROADMAP.md)
+for the next step (a YOLO26 A/B on the identical gate).
 
 ## Tech stack
 
