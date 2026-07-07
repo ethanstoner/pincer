@@ -51,6 +51,24 @@ Built from scratch in Python: real-time video pipeline, on-device actuation, a c
 
 The choice of a purpose-trained YOLO was itself an experiment: a 3B-parameter open-vocabulary localization model was evaluated and **ruled out by measurement** (99 s/frame, zero game sprites found — out of distribution). A ~5–10 ms fine-tuned detector wins decisively when capture latency dominates anyway.
 
+## Benchmarks
+
+Live model (YOLO11s, held-out validation):
+
+| Metric | Value |
+|--------|-------|
+| mAP@50 | **0.84** |
+| mAP@50–95 | **0.66** |
+| Precision | **0.81** |
+| Recall | **0.77** |
+| Inference latency | ~5–10 ms (RTX 4090) |
+| End-to-end catch | ~5.3 s, back-to-back |
+
+> 📊 **Expanded stats coming.** A retrain on the full 5,445-frame, 2-class dataset is in
+> progress; once it's gated, this section will carry the updated model metrics plus live
+> operational figures (catch rate, empty-tap %, panel-tap %, catches/hour). See
+> [`ROADMAP.md`](ROADMAP.md).
+
 ## Tech stack
 
 **Python** · **YOLO11 / Ultralytics** · **PyTorch (CUDA, RTX 4090)** · **OpenCV** · **PyAV (H.264)** · **ADB / Android instrumentation** · **NumPy** · stdlib **HTTP/MJPEG** servers (zero web deps) · **pytest** (127 tests)
@@ -102,6 +120,15 @@ pincer/
 ```
 
 *Not tracked (see `.gitignore`): `dataset/` (self-collected training data), `training/runs/` (weights), `experiments/` (CUDA training venv), `venv/`.*
+
+## Roadmap
+
+- 🔨 Retrain the detector on the full 5,445-frame, 2-class dataset; gate and ship.
+- ⏳ Publish expanded model + live operational stats (see [Benchmarks](#benchmarks)).
+- ⏳ Sustained two-phone live run; slim the runtime to `onnxruntime` (drop `torch`).
+- ⏳ Move the monitor/review UI from web to a packaged desktop app.
+
+Full roadmap → [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
