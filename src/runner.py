@@ -116,6 +116,7 @@ def _make_detector_fn(config):
                 return None
             return _cv_propose(img, phone, exclude=exclude)
 
+        hybrid.yolo = yolo  # let the catch loop read yolo.last_pokemon_boxes
         return hybrid
     return None  # None -> CatchLoop uses its default CV propose
 

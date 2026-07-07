@@ -25,12 +25,24 @@ from src.detector import (
 
 
 class YoloDetector:
+    # Confidence floor for pseudo-labelling OTHER pokemon in a caught frame
+    # (see propose). Stricter than the tap conf so completion never invents a
+    # spawn: a spurious extra label poisons training worse than a missed one.
+    _SIBLING_CONF = 0.55
+
     def __init__(self, model_path: str, conf: float = 0.35, imgsz: int = 1280):
         from ultralytics import YOLO  # lazy: only needed when YOLO is enabled
 
         self._model = YOLO(model_path)
         self._conf = conf
         self._imgsz = imgsz
+        # How many pokemon boxes the LAST propose() saw ANYWHERE on the frame
+        # (before the central-region and embargo filters). The catch loop reads
+        # this to tell "map is genuinely empty" (0 -> ok to pan the camera) from
+        # "pokemon are visible but currently un-tappable" (out of region /
+        # embargoed -> DON'T pan away from them). Live: it panned with 5 spawns
+        # on screen because the tappable one was briefly filtered.
+        self.last_pokemon_boxes = 0
 
     @staticmethod
     def _rect_dist(px, py, rect):
@@ -69,6 +81,8 @@ class YoloDetector:
         ax, ay = AVATAR_RATIO[0] * w, AVATAR_RATIO[1] * h
         best_box, best_dist = None, None
         avoid_rects = []
+        in_region = []   # (x1,y1,x2,y2,conf) class-0 boxes inside the search band
+        pokemon_seen = 0
         for box in result.boxes:
             x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
             if int(box.cls) != 0:
@@ -76,6 +90,7 @@ class YoloDetector:
                 # steer the tap point AWAY from its hitbox.
                 avoid_rects.append((x1, y1, x2, y2))
                 continue
+            pokemon_seen += 1  # a pokemon box exists SOMEWHERE (pre-filter)
             cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
             # Same central-region guard as the CV detector: off the UI strips and
             # the top gym/raid band, so a stray box there can't trigger a tap.
@@ -84,17 +99,28 @@ class YoloDetector:
                 and SEARCH_Y_LOW * h <= cy <= SEARCH_Y_HIGH * h
             ):
                 continue
+            in_region.append((x1, y1, x2, y2, float(box.conf)))
             dist = math.hypot(cx - ax, cy - ay)
             if best_dist is None or dist < best_dist:
                 best_dist = dist
                 best_box = (x1, y1, x2, y2)
 
+        self.last_pokemon_boxes = pokemon_seen
         if best_box is None:
             return None
+        # Pseudo-label the OTHER confident pokemon in this frame so a verified
+        # catch trains a FULLY-annotated frame (no visible spawn left as
+        # background). Stricter than the tap conf: a wrong extra label is more
+        # costly than a skipped one, and the caught box is always ground truth.
+        siblings = tuple(
+            (round(bx1), round(by1), round(bx2 - bx1), round(by2 - by1))
+            for (bx1, by1, bx2, by2, conf) in in_region
+            if conf >= self._SIBLING_CONF and (bx1, by1, bx2, by2) != best_box
+        )
         tx, ty = self._tap_point(best_box, avoid_rects)
         x1, y1, x2, y2 = best_box
         return Target(
             x=round(tx), y=round(ty),
             bbox=(round(x1), round(y1), round(x2 - x1), round(y2 - y1)),
-            src="yolo",
+            src="yolo", siblings=siblings,
         )

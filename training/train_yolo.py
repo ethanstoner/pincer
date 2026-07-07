@@ -22,6 +22,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "yolo_data")
 EPOCHS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "yolo11s.pt"
+# Output run name. Train to a SEPARATE dir (e.g. "pokemon_retrain") so the live
+# model at runs/pokemon/weights/best.pt the bot is using stays untouched until
+# the new one is gated and copied over.
+NAME = sys.argv[3] if len(sys.argv) > 3 else "pokemon"
+# Speed knobs (env-overridable so an OOM/crash can be dialed back without edits):
+#   batch 16 fills the 4090 better than 8; workers 8 parallelizes data loading;
+#   disk cache skips re-decoding the ~6k PNGs every epoch. Drop BATCH if the
+#   live bot's inference + training together OOM the GPU.
+BATCH = int(os.environ.get("POGO_BATCH", "16"))
+WORKERS = int(os.environ.get("POGO_WORKERS", "8"))
+CACHE = os.environ.get("POGO_CACHE", "disk")
 
 # class 1 "avoid" = hard negatives from taps that opened a panel (gym / stop /
 # power spot / Rocket...), saved live by detector.save_negative_label. The bot
@@ -38,19 +49,21 @@ def main():
         data=yaml_path,
         epochs=EPOCHS,
         imgsz=1280,          # tall phone frames -> keep sprites ~40-60px after resize
-        batch=8,
+        batch=BATCH,         # bigger batch -> fuller GPU steps, fewer iters/epoch
         device=0,
-        workers=0,           # Windows: spawned dataloader workers re-import this
-                             # module; workers=0 avoids the freeze_support crash
+        workers=WORKERS,     # parallel data loading. The __main__ guard below makes
+                             # spawned workers safe on Windows (they re-import this
+                             # module but __name__ != __main__, so main() won't rerun)
+        cache=CACHE,         # cache resized images so epochs 2+ skip decoding 6k PNGs
         project=os.path.join(HERE, "runs"),
-        name="pokemon",
+        name=NAME,
         exist_ok=True,
         patience=40,
         degrees=0, shear=0, perspective=0,   # UI is axis-aligned; don't warp it
         mosaic=1.0, fliplr=0.5, hsv_h=0.02, hsv_s=0.5, hsv_v=0.4,  # color/lighting variety
     )
 
-    best = os.path.join(HERE, "runs", "pokemon", "weights", "best.pt")
+    best = os.path.join(HERE, "runs", NAME, "weights", "best.pt")
     print("best model:", best)
     try:
         YOLO(best).export(format="onnx", imgsz=1280, dynamic=False, simplify=True)

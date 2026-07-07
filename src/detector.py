@@ -43,6 +43,13 @@ class Target:
     y: int
     bbox: tuple  # (x, y, w, h)
     src: str = "cv"  # which detector proposed it ("cv" / "yolo") -- for audit
+    # Other high-confidence pokemon boxes the SAME propose() saw in this frame,
+    # as (x, y, w, h) pixel bboxes. Carried on the Target (not on the shared
+    # detector) so two phone threads sharing one model never race. On a verified
+    # catch these are written as extra class-0 labels so the frame is FULLY
+    # annotated -- unlabeled spawns would otherwise train those regions as
+    # background and crush recall in dense scenes.
+    siblings: tuple = ()
 
 
 # --- Central detection region (ratios of width/height) ---
@@ -564,23 +571,34 @@ def tighten_bbox(img: np.ndarray, bbox: tuple) -> tuple:
 
 
 def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
-    """Save a YOLO training example from a CONFIRMED catch: the FULL map frame
-    plus a one-box label (class 0 = wild Pokemon) at the target. Called on every
-    confirmed encounter, so normal operation accumulates real, correctly-labeled
-    training data. Layout: `<dataset>/images/<stem>.png` + `<dataset>/labels/
-    <stem>.txt` (YOLO format `class cx cy w h`, all normalized 0-1). Returns the
-    image path.
+    """Save a YOLO training example from a CONFIRMED catch: the FULL map frame,
+    labelled class 0 (wild Pokemon) at the caught box AND at every other Pokemon
+    the model confidently saw in the same frame (target.siblings). Called on
+    every confirmed encounter, so normal operation accumulates real, correctly-
+    labeled training data. Layout: `<dataset>/images/<stem>.png` + `<dataset>/
+    labels/<stem>.txt` (YOLO format `class cx cy w h`, all normalized 0-1).
+    Returns the image path.
 
-    (The confirmed box is ground truth -- the tap DID open an encounter -- so
-    every saved frame has at least one correct Pokemon box. Other Pokemon in the
-    same frame stay unlabeled; enough frames average that sparsity out.)
+    The caught box is ground truth (the tap DID open an encounter). The siblings
+    complete the annotation so unlabeled spawns in a dense frame are NOT taught
+    as background -- the single biggest recall killer in crowded scenes. Dup
+    boxes (a sibling overlapping the caught box) are dropped so we never write
+    two labels for one Pokemon.
     """
     images_dir = os.path.join(dataset_dir, "images")
     labels_dir = os.path.join(dataset_dir, "labels")
     h, w = img.shape[:2]
-    bx, by, bw, bh = tighten_bbox(img, target.bbox)  # drop merged-in UI badges
-    cx = (bx + bw / 2.0) / w
-    cy = (by + bh / 2.0) / h
+
+    boxes = [tighten_bbox(img, target.bbox)]  # caught box, UI-badge trimmed
+    for sib in getattr(target, "siblings", ()):
+        if not _boxes_overlap(sib, boxes[0]):   # skip a dup of the caught box
+            boxes.append(sib)
+
+    lines = []
+    for bx, by, bw, bh in boxes:
+        cx = (bx + bw / 2.0) / w
+        cy = (by + bh / 2.0) / h
+        lines.append(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
 
     with _LABEL_LOCK:  # atomic index+write so 2 phones can't collide
         os.makedirs(images_dir, exist_ok=True)
@@ -591,9 +609,24 @@ def save_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:
         lbl_path = os.path.join(labels_dir, f"{stem}.txt")
         cv2.imwrite(img_path, img)
         with open(lbl_path, "w") as f:
-            f.write(f"0 {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}\n")
+            f.writelines(lines)
 
     return img_path
+
+
+def _boxes_overlap(a, b, iou_thresh=0.4):
+    """True if two (x, y, w, h) boxes overlap by >= iou_thresh -- used to drop a
+    sibling that is really the caught box detected a second time."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix1, iy1 = max(ax, bx), max(ay, by)
+    ix2, iy2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return False
+    union = aw * ah + bw * bh - inter
+    return union > 0 and inter / union >= iou_thresh
 
 
 def save_negative_label(img: np.ndarray, target: Target, dataset_dir: str) -> str:

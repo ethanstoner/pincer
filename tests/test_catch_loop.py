@@ -447,6 +447,121 @@ def test_camera_pans_after_empty_scans_but_not_immediately():
     assert device.taps == []                         # never tapped anything
 
 
+def test_no_camera_pan_while_pokemon_still_on_screen():
+    # No TAPPABLE target (all out-of-region / embargoed) but the model still
+    # sees spawns: the camera must NOT pan away from them, even after a long
+    # empty stretch (live: it rotated with ~5 mon visible). The pan clock resets.
+    class FakeYolo:
+        last_pokemon_boxes = 4          # spawns present, just not tappable
+    classifier = Scripted([ScreenState.MAP])
+    loop, device, _, _ = make_loop(classifier, Scripted([False]),
+                                   detector_fn=lambda img, phone: None)
+    loop._yolo = FakeYolo()
+    loop._last_target_t = -10.0                      # long-empty stretch
+    loop.tick()
+    assert device.swipes == []                       # never panned
+    assert loop._last_target_t > -1.0                # pan clock restarted (was -10)
+
+
+def test_camera_still_pans_when_map_truly_empty():
+    # Same long-empty stretch but the model sees ZERO spawns -> the pan is the
+    # right move (look behind gyms / off-angle), so it must still fire.
+    class FakeYolo:
+        last_pokemon_boxes = 0
+    classifier = Scripted([ScreenState.MAP])
+    loop, device, _, _ = make_loop(classifier, Scripted([False]),
+                                   detector_fn=lambda img, phone: None)
+    loop._yolo = FakeYolo()
+    loop._last_target_t = -10.0
+    loop.tick()
+    assert len(device.swipes) == 1                   # panned on a truly empty map
+
+
+def test_static_screen_reconnects_link_and_never_restarts_app():
+    # A totally STATIC screen = no fresh frames = a DROPPED LINK. The loop must
+    # RECONNECT (not restart the app -- a live wifi blip once killed the game).
+    dev = FakeDevice()                      # constant frame -> looks static
+    dev.reconnects = dev.restarts = 0
+    dev.reconnect = lambda: setattr(dev, "reconnects", dev.reconnects + 1)
+    dev.restart_app = lambda package="x": setattr(dev, "restarts", dev.restarts + 1)
+    loop, device, _, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]),
+        device=dev, detector_fn=lambda img, phone: None,
+    )
+    loop.tick()                             # baseline the signature
+    assert dev.reconnects == 0              # not static long enough yet
+    loop._freeze_since = loop.clock() - 100.0   # pretend static (no frames) 100s
+    loop.tick()
+    assert dev.reconnects == 1              # dropped link -> reconnected
+    assert dev.restarts == 0                # app NEVER restarted for a static screen
+    assert device.taps == []
+
+
+# a detector that returns a DIFFERENT spawn each tick (>170px apart, so no
+# single spot gets embargoed) -- what a hung app looks like: it keeps finding
+# spawns to tap, and every tap opens nothing.
+def _moving_targets():
+    st = {"i": 0}
+    def det(img, phone):
+        st["i"] += 1
+        x = 200 * st["i"]
+        return Target(x=x, y=1200, bbox=(x - 20, 1180, 40, 40))
+    return det
+
+
+def test_hung_app_restarts_when_taps_keep_failing_but_frames_move():
+    # The real app-freeze signature: frames still flow (a target is found every
+    # tick) but every tap opens NOTHING. After enough dead taps -> restart app.
+    dev = FakeDevice()
+    dev.restarts = 0
+    dev.restart_app = lambda package="x": setattr(dev, "restarts", dev.restarts + 1)
+    dev.is_responsive = lambda: True        # link alive -> it's the app, not the link
+    loop, device, _, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]),   # tap never encounters
+        device=dev, detector_fn=_moving_targets(),
+        close_check=lambda img: False,      # bail is 'nothing', not 'panel'
+    )
+    for _ in range(20):                     # 20 dead taps in a row
+        loop.tick()
+    assert dev.restarts >= 1                # app hung -> restarted
+
+
+def test_dead_link_reconnects_instead_of_restarting_app_on_dead_taps():
+    # Same dead-tap streak, but the link is DOWN -> reconnect, don't restart app.
+    dev = FakeDevice()
+    dev.reconnects = dev.restarts = 0
+    dev.is_responsive = lambda: False       # link is down
+    dev.reconnect = lambda: setattr(dev, "reconnects", dev.reconnects + 1)
+    dev.restart_app = lambda package="x": setattr(dev, "restarts", dev.restarts + 1)
+    loop, device, _, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]),
+        device=dev, detector_fn=_moving_targets(),
+        close_check=lambda img: False,
+    )
+    for _ in range(20):
+        loop.tick()
+    assert dev.reconnects >= 1              # link down -> reconnected
+    assert dev.restarts == 0                # app not restarted through a dead link
+
+
+def test_repeated_screencap_failure_reconnects_link():
+    # Several None screencaps in a row on a wireless phone = the link dropped.
+    class DeadDevice(FakeDevice):
+        def screencap(self):
+            self.screencaps += 1
+            return None
+    dev = DeadDevice()
+    dev.reconnects = 0
+    dev.reconnect = lambda: setattr(dev, "reconnects", dev.reconnects + 1)
+    loop, _, _, _ = make_loop(
+        Scripted([ScreenState.MAP]), Scripted([False]),
+        device=dev, detector_fn=lambda img, phone: None,
+    )
+    for _ in range(4):
+        loop.tick()
+    assert dev.reconnects >= 1              # link-drop -> reconnect attempted
+
+
 def test_no_tap_while_view_is_rotating_fast():
     # High measured pan speed = motion-blurred frame -> detections mislocate
     # (live: taps landed on stops). The tick must skip the tap entirely.

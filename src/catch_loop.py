@@ -92,6 +92,20 @@ class CatchLoop:
     _LEAD_MAX_PX = 110            # hard cap on how far a tap may be led
     _MAP_BAIL_MS = 1600               # after this, still-on-MAP means the tap opened nothing
                                       # (1.2s misfiled slow day encounter loads as 'nothing')
+    # Two DIFFERENT failures, healed differently (Ethan's model):
+    #   * DROPPED LINK -- the screen goes totally STATIC because no new frames
+    #     arrive. A live map is never static (autowalk + lure petals animate
+    #     every frame), so a long-static frame (or repeated screencap failures)
+    #     means the wireless adb link died -> RECONNECT it. Never restart the app
+    #     (the old code did, and a wifi blip killed the game).
+    #   * HUNG APP -- the screen KEEPS animating but the app ignores taps: many
+    #     taps in a row open nothing while frames still move -> RESTART the app.
+    _STATIC_RECONNECT_S = 12.0        # static frames this long -> link dropped
+    _FREEZE_DIFF_EPS = 1.2            # mean abs pixel diff (0-255) below which two
+                                      # 48x48 gray frames count as "identical"
+    _APP_FREEZE_NOTHINGS = 18         # taps-in-a-row that opened nothing (while the
+                                      # link is alive) before we call the app hung
+    _SCREENCAP_FAILS_RECONNECT = 3    # None screencaps in a row -> reconnect link
 
     def __init__(
         self,
@@ -137,6 +151,12 @@ class CatchLoop:
         self._pan_v = None          # smoothed (EMA) pan velocity, px/s
         self._miss_strikes = []     # [(x, y, expires)] single-miss strikes
         self._consec_nothing = 0    # taps in a row that had NO effect at all
+        self._freeze_sig = None     # last coarse frame signature (48x48 gray)
+        self._freeze_since = None   # when the frame last STARTED being static
+        self._screencap_fails = 0   # consecutive None screencaps (link-drop signal)
+        self._battery_next = 0.0    # next clock time to poll battery (throttled)
+        self._mirroring = True      # applied mirror state (screen on + stream up)
+        self._poweroff_next = 0.0   # next clock time to re-assert screen SLEEP
         # Streamed frames are fresher than pulled ones -> shorter tap lead.
         self._tap_lead_s = getattr(device, "tap_lead_s", self._TAP_LEAD_S)
         try:
@@ -145,6 +165,12 @@ class CatchLoop:
             )
         except (TypeError, ValueError):
             self._detector_takes_exclude = False
+        # The underlying YoloDetector (if any) exposes last_pokemon_boxes so the
+        # pan logic can tell "map empty" from "spawns visible but un-tappable".
+        # detector_fn is either yolo.propose (a bound method -> __self__) or the
+        # hybrid closure (which carries a .yolo attribute).
+        self._yolo = (getattr(detector_fn, "__self__", None)
+                      or getattr(detector_fn, "yolo", None))
 
     # --- small helpers -----------------------------------------------------
     def _sleep(self, ms_range):
@@ -231,6 +257,57 @@ class CatchLoop:
             if (self.clock() - start) * 1000.0 >= timeout_ms:
                 return None, last_img
             self.sleep_fn(self._POLL_INTERVAL_MS / 1000.0)
+
+    def _static_screen_check(self, img, now):
+        """A totally STATIC screen = no fresh frames = a DROPPED LINK (per Ethan:
+        a hung app keeps animating, it just ignores taps; a truly frozen picture
+        means nothing is arriving). So a long-static frame triggers an adb
+        RECONNECT -- never an app restart (the old logic restarted PoGo here and
+        killed the game on every wifi blip). A live map is never static: autowalk
+        + lure petals move every frame. Returns True if it acted (tick is done)."""
+        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (48, 48))
+        if self._freeze_sig is None:
+            self._freeze_sig, self._freeze_since = small, now
+            return False
+        diff = float(np.mean(cv2.absdiff(small, self._freeze_sig)))
+        self._freeze_sig = small
+        if diff >= self._FREEZE_DIFF_EPS:
+            self._freeze_since = now          # frame moved -> the stream is alive
+            return False
+        if now - self._freeze_since < self._STATIC_RECONNECT_S:
+            return False
+        # No fresh frames for too long -> the link is almost certainly down.
+        if hasattr(self.device, "reconnect"):
+            if self.monitor is not None:
+                self.monitor.note = "screen static -> reconnecting link"
+            self.device.reconnect()
+        self._freeze_since = now
+        self._freeze_sig = None
+        self._sleep((1500, 3000))             # let the link re-establish
+        return True
+
+    def _maybe_restart_hung_app(self):
+        """Called when taps keep opening NOTHING while frames still flow. If the
+        link is alive (responsive) the app itself is hung -> restart it. If the
+        link is actually down, reconnect instead. This is the ONLY path that
+        restarts the app, and only for an ANIMATING-but-unresponsive screen."""
+        responsive = (not hasattr(self.device, "is_responsive")
+                      or self.device.is_responsive())
+        if responsive and hasattr(self.device, "restart_app"):
+            print(f"[{self.phone.serial}] app hung ({self._consec_nothing} dead "
+                  f"taps) -> restarting PoGo")
+            if self.monitor is not None:
+                self.monitor.note = "app hung -> restarting"
+            self.device.restart_app()
+            self._sleep((6000, 9000))         # let the app reload to the map
+        elif hasattr(self.device, "reconnect"):
+            if self.monitor is not None:
+                self.monitor.note = "link down -> reconnecting"
+            self.device.reconnect()
+            self._sleep((1500, 3000))
+        self._consec_nothing = 0
+        self._last_target_t = None
+        self._freeze_sig = None
 
     def _pan_lead(self, img, now):
         """(dx, dy) px to ADD to a tap so it lands where the target will BE.
@@ -432,8 +509,18 @@ class CatchLoop:
     def tick(self):
         img = self.device.screencap()
         if img is None:
+            # No frame at all. A few in a row on a wireless phone = the link
+            # dropped -> reconnect (never a data-less app restart).
+            self._screencap_fails += 1
+            if (self._screencap_fails >= self._SCREENCAP_FAILS_RECONNECT
+                    and hasattr(self.device, "reconnect")):
+                if self.monitor is not None:
+                    self.monitor.note = "no screencap -> reconnecting link"
+                self.device.reconnect()
+                self._screencap_fails = 0
             self._sleep(self.config.timing["map_scan_ms"])
             return
+        self._screencap_fails = 0
 
         if _is_screen_off(img):
             # Display slept -> screencap is black. Wake it instead of spinning in
@@ -450,6 +537,8 @@ class CatchLoop:
 
         if state == ScreenState.MAP:
             now = self.clock()
+            if self._static_screen_check(img, now):  # dropped link -> reconnected
+                return
             lead_x, lead_y = self._pan_lead(img, now)  # motion compensation
             if self._pan_speed > self._BLUR_SPEED_MAX:
                 # View is rotating fast -> this H.264 frame is motion-blurred
@@ -471,6 +560,17 @@ class CatchLoop:
                 ):
                     target = None
             if target is None:
+                # No TAPPABLE target -- but are there pokemon on screen at all?
+                # If the model still sees spawns (they're out of the central
+                # region, or briefly embargoed after a miss), DON'T pan away from
+                # them: the autowalk drifts them into reach and embargoes expire
+                # within seconds. Only pan when the map is GENUINELY empty, so we
+                # never rotate past visible spawns (live: it panned with ~5 mon
+                # on screen). A pan-until-empty clock still handles true dead air.
+                if self._yolo is not None and self._yolo.last_pokemon_boxes > 0:
+                    self._last_target_t = now  # spawns exist -> reset pan clock
+                    self._sleep(self.config.timing["map_scan_ms"])
+                    return
                 # Visible spawns exhausted? Rotate the camera to look around --
                 # spawns hide behind gyms/towers and outside the current angle.
                 if self._last_target_t is None:
@@ -519,13 +619,18 @@ class CatchLoop:
                             (target.x, target.y, tnow + self._FAIL_SPOT_TTL_S))
                     else:
                         self._miss_strikes.append((target.x, target.y, tnow + 6.0))
-                    # Taps having NO effect repeatedly = the input shell may be
-                    # wedged (writes silently swallowed). Respawn it.
+                    # Escalating self-heal for taps that keep opening NOTHING
+                    # while frames still flow (targets keep being found):
+                    #   4 in a row  -> the input shell may be wedged; rebuild it.
+                    #   18 in a row -> input respawn didn't help; the APP is hung
+                    #                  (animating but ignoring taps) -> restart it
+                    #                  (or reconnect if the link is actually down).
                     self._consec_nothing += 1
-                    if (self._consec_nothing >= 4
+                    if (self._consec_nothing == 4
                             and hasattr(self.device, "respawn_input")):
                         self.device.respawn_input()
-                        self._consec_nothing = 0
+                    elif self._consec_nothing >= self._APP_FREEZE_NOTHINGS:
+                        self._maybe_restart_hung_app()
                 if self.monitor is not None:
                     self.monitor.bump(outcome)
                 if outcome == "panel":
@@ -551,25 +656,70 @@ class CatchLoop:
             # first briefly-empty rescan pans even with spawns still visible.
             self._last_target_t = self.clock()
             self._consec_nothing = 0  # taps demonstrably work
+            self._freeze_sig = None   # re-baseline: the scene changed during the catch
             if self.monitor is not None:
                 self.monitor.bump("encounter")
 
         elif state == ScreenState.ENCOUNTER:
             self._run_throw_loop()  # entered mid-encounter
             self._last_target_t = None  # camera-pan clock restarts on the map
+            self._freeze_sig = None     # re-baseline freeze check back on the map
 
         else:  # POKESTOP, GYM, or UNKNOWN
             self._recover(state, img=img)  # reuse tick's frame: no extra screencap
             self._last_target_t = None  # camera-pan clock restarts on the map
+            self._freeze_sig = None     # re-baseline freeze check back on the map
+
+    def _poll_battery(self):
+        """Refresh the phone's battery % into the monitor every ~30s (dumpsys is
+        too slow to run per tick). Runs while paused too, so a charging phone's
+        level still updates on the dashboard."""
+        if self.monitor is None or not hasattr(self.device, "battery_level"):
+            return
+        now = self.clock()
+        if now < self._battery_next:
+            return
+        self._battery_next = now + 30.0
+        level, charging = self.device.battery_level()
+        self.monitor.set_battery(level, charging)
 
     def run(self, stop_event):
         while not stop_event.is_set():
-            if self.monitor is not None and self.monitor.pause_event.is_set():
+            self._poll_battery()
+            mon = self.monitor
+            mirror_on = mon is None or mon.mirror
+            if not mirror_on:
+                # Mirroring OFF: stop the screen stream and power the display down
+                # so a paused/charging phone actually rests. Idle (no screencap,
+                # no feed) until turned back on. Re-assert SLEEP every few seconds
+                # because USB-charging / the client can re-wake the display on its own.
+                if self._mirroring:
+                    if hasattr(self.device, "stop_stream"):
+                        self.device.stop_stream()
+                    if mon is not None:
+                        mon.publish_off()
+                    self._mirroring = False
+                    self._poweroff_next = 0.0
+                if self.clock() >= self._poweroff_next:
+                    if hasattr(self.device, "sleep_screen"):
+                        self.device.sleep_screen()
+                    self._poweroff_next = self.clock() + 4.0
+                self.sleep_fn(0.6)
+                continue
+            if not self._mirroring:
+                # Just turned back ON: wake the screen and respawn the stream.
+                if hasattr(self.device, "wake_screen"):
+                    self.device.wake_screen()
+                if hasattr(self.device, "start_stream"):
+                    self.device.start_stream()
+                self._mirroring = True
+                self.sleep_fn(0.8)  # let the stream warm up before catching
+            if mon is not None and mon.pause_event.is_set():
                 # Paused from the live UI: keep publishing a heartbeat frame so
                 # the dashboard stays live, but touch nothing on the phone.
                 img = self.device.screencap()
                 if img is not None:
-                    self.monitor.publish(img, "PAUSED")
+                    mon.publish(img, "PAUSED")
                 self.sleep_fn(0.4)
                 continue
             try:

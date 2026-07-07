@@ -34,6 +34,27 @@ def test_save_label_writes_full_frame_and_yolo_label(tmp_path):
     assert p2.replace("\\", "/").endswith("images/pokemon_000001.png")
 
 
+def test_save_label_writes_sibling_boxes_to_complete_dense_frame(tmp_path):
+    # A verified catch in a dense frame must label the caught box AND every
+    # other confident spawn the model saw, so no visible Pokemon is left as
+    # background (the dense-scene recall killer).
+    img = np.zeros((2388, 1080, 3), np.uint8)
+    target = Target(x=440, y=1150, bbox=(432, 1140, 108, 120),
+                    siblings=((100, 300, 80, 90),        # a real other spawn
+                              (430, 1138, 110, 118)))    # ~dup of caught box
+    ds = str(tmp_path / "dataset")
+    save_label(img, target, ds)
+
+    lines = open(os.path.join(ds, "labels", "pokemon_000000.txt")).read().splitlines()
+    # caught box + the non-overlapping sibling = 2 lines; the dup is dropped
+    assert len(lines) == 2
+    assert all(ln.startswith("0 ") for ln in lines)
+    # the distinct sibling's center (140/1080, 345/2388) is present
+    centers = {(round(float(p[1]), 3), round(float(p[2]), 3))
+               for p in (ln.split() for ln in lines)}
+    assert (round(140 / 1080, 3), round(345 / 2388, 3)) in centers
+
+
 def test_proposes_target_on_real_map():
     cfg = load_config("config.json")
     phone = cfg.phones[0]

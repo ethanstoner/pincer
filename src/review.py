@@ -22,14 +22,23 @@ import numpy as np
 
 from src.detector import _LABEL_LOCK, _next_label_index
 
-# reasons that mark a real avoidable OBJECT at the tapped box
+# reasons that mark a real avoidable OBJECT at the tapped box -> class-1 label.
+# "player" = the trainer avatar / buddy in the map center: a frequent mis-tap
+# Ethan flagged, and teaching it as an explicit avoid box stops the model tapping
+# it (it sits at a near-fixed spot, so it's a strong, learnable negative).
 AVOID_REASONS = {"gym", "gym pokemon", "dynamax", "raid icon", "pokestop",
-                 "rocket", "ui element"}
+                 "rocket", "ui element", "player"}
 _PAD = 100
 
 
 class ReviewStore:
-    def __init__(self, dataset_dir, keep=400):
+    # Cards that need HUMAN judgment. An 'encounter' outcome is self-evidently a
+    # correct detection (the tap opened a catch) and is already auto-labelled a
+    # pokemon on the catch path, so it never enters the grading queue -- grading
+    # it would be busy-work. 'nothing'/'panel'/'timeout' are the ambiguous ones.
+    GRADABLE_OUTCOMES = {"nothing", "panel", "timeout"}
+
+    def __init__(self, dataset_dir, keep=5000):
         self.dataset_dir = dataset_dir
         self.dir = os.path.join(dataset_dir, "review")
         self.feedback_dir = os.path.join(dataset_dir, "feedback")
@@ -73,6 +82,7 @@ class ReviewStore:
                         [cv2.IMWRITE_JPEG_QUALITY, 82])
             meta = {"id": rid, "outcome": outcome, "bbox": [bx, by, bw, bh],
                     "frame": [w, h], "src": getattr(target, "src", "?"),
+                    "siblings": [list(s) for s in getattr(target, "siblings", ())],
                     "vote": None, "reason": None}
             with open(os.path.join(self.dir, rid + ".json"), "w") as f:
                 json.dump(meta, f)
@@ -103,10 +113,111 @@ class ReviewStore:
                 pass
         return out
 
+    def queue(self, n=40):
+        """Oldest UNGRADED, GRADABLE cards first -- the grading queue feeds one
+        at a time from the front, so votes never re-show and Ethan grades without
+        hunting or scrolling. Known-correct 'encounter' cards are skipped (see
+        GRADABLE_OUTCOMES). Newest-first `recent()` still backs the gallery."""
+        names = sorted(name for name in os.listdir(self.dir)
+                       if name.endswith(".json"))
+        out = []
+        for name in names:
+            try:
+                with open(os.path.join(self.dir, name)) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if (meta.get("vote") is None
+                    and meta.get("outcome") in self.GRADABLE_OUTCOMES):
+                out.append(meta)
+                if len(out) >= n:
+                    break
+        return out
+
+    def counts(self):
+        """(graded, ungraded) where `ungraded` counts only GRADABLE cards still
+        needing a vote -- the number the dashboard badge and progress show."""
+        graded = ungraded = 0
+        for name in os.listdir(self.dir):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self.dir, name)) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if meta.get("vote") is not None:
+                graded += 1
+            elif meta.get("outcome") in self.GRADABLE_OUTCOMES:
+                ungraded += 1
+        return graded, ungraded
+
     def image_path(self, rid):
         if not rid.startswith("r") or not rid[1:].isdigit():
             return None  # no path tricks
         return os.path.join(self.dir, rid + ".jpg")
+
+    def image_full_path(self, rid):
+        """Path to the FULL pre-click frame (for the dense hand-label canvas)."""
+        if not rid.startswith("r") or not rid[1:].isdigit():
+            return None
+        return os.path.join(self.dir, rid + "_full.jpg")
+
+    # --- dense hand-labelling (box EVERY spawn in a crowded frame) -----------
+    def frames_for_labeling(self, n=60):
+        """Newest full-frames not yet hand-labelled -- the source for the
+        'box every Pokemon' pass that fixes zero-recall dense scenes. Each entry
+        carries the model's own boxes as a starting point so Ethan only adds the
+        ones it MISSED instead of drawing from scratch."""
+        names = sorted((name for name in os.listdir(self.dir)
+                        if name.endswith(".json")), reverse=True)
+        out = []
+        for name in names:
+            try:
+                with open(os.path.join(self.dir, name)) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if meta.get("hand_labeled"):
+                continue
+            if not os.path.exists(os.path.join(self.dir, meta["id"] + "_full.jpg")):
+                continue
+            w, h = meta.get("frame", [1, 1])
+            seed = []  # model boxes, normalized (cx,cy,nw,nh), as a starting set
+            bx, by, bw, bh = meta["bbox"]
+            seed.append([(bx + bw / 2.0) / w, (by + bh / 2.0) / h, bw / w, bh / h])
+            for sx, sy, sw, sh in meta.get("siblings", []):
+                seed.append([(sx + sw / 2.0) / w, (sy + sh / 2.0) / h, sw / w, sh / h])
+            out.append({"id": meta["id"], "outcome": meta["outcome"],
+                        "frame": [w, h], "seed": seed})
+            if len(out) >= n:
+                break
+        return out
+
+    def save_boxes(self, rid, boxes):
+        """Persist a full hand-labelled frame: EVERY box (normalized [cx,cy,w,h])
+        written as class 0 on the full frame, and the card marked hand_labeled so
+        it leaves the label queue. Empty box list still marks it done (a frame
+        with genuinely no spawns is a valid all-background example -- but we skip
+        writing an empty label file, which YOLO reads as 'no objects')."""
+        meta_path = os.path.join(self.dir, rid + ".json")
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            return False
+        full = cv2.imread(os.path.join(self.dir, rid + "_full.jpg"))
+        if full is None:
+            return False
+        rows = [(float(cx), float(cy), float(nw), float(nh))
+                for cx, cy, nw, nh in boxes]
+        if rows:
+            self._write_label(full, 0, "pokemon_", rows)
+        meta["hand_labeled"] = True
+        meta["hand_boxes"] = len(rows)
+        with open(meta_path, "w") as f:
+            json.dump(meta, f)
+        return True
 
     # --- voting -> labels ----------------------------------------------------
     def vote(self, rid, vote, reason=None):
@@ -128,16 +239,25 @@ class ReviewStore:
             return True
         bx, by, bw, bh = meta["bbox"]
         h, w = full.shape[:2]
-        cx, cy = (bx + bw / 2.0) / w, (by + bh / 2.0) / h
+
+        def norm(box):
+            x, y, ww, hh = box
+            return ((x + ww / 2.0) / w, (y + hh / 2.0) / h, ww / w, hh / h)
 
         if vote == "bad" and (reason or "").lower() in AVOID_REASONS:
-            self._write_label(full, 1, "avoid_", cx, cy, bw / w, bh / h)
+            self._write_label(full, 1, "avoid_", [norm([bx, by, bw, bh])])
         elif vote == "good" and meta["outcome"] == "nothing":
-            # a missed REAL Pokemon: human confirms the box -> recall example
-            self._write_label(full, 0, "pokemon_", cx, cy, bw / w, bh / h)
+            # a missed REAL Pokemon: human confirms the box -> recall example.
+            # Complete the frame with the model's OTHER confident spawns so this
+            # dense scene isn't half-labelled (same fix as the catch path).
+            rows = [norm([bx, by, bw, bh])]
+            rows += [norm(s) for s in meta.get("siblings", [])]
+            self._write_label(full, 0, "pokemon_", rows)
         return True
 
-    def _write_label(self, img, cls, prefix, cx, cy, nw, nh):
+    def _write_label(self, img, cls, prefix, rows):
+        """Write one training image + a multi-row YOLO label file (each row a
+        normalized (cx, cy, w, h) box of class `cls`)."""
         images_dir = os.path.join(self.dataset_dir, "images")
         labels_dir = os.path.join(self.dataset_dir, "labels")
         with _LABEL_LOCK:
@@ -147,4 +267,5 @@ class ReviewStore:
             stem = f"{prefix}{index:06d}"
             cv2.imwrite(os.path.join(images_dir, stem + ".png"), img)
             with open(os.path.join(labels_dir, stem + ".txt"), "w") as f:
-                f.write(f"{cls} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}\n")
+                for cx, cy, nw, nh in rows:
+                    f.write(f"{cls} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}\n")

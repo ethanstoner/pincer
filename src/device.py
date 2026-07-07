@@ -22,9 +22,10 @@ class _StreamCapture:
     _MAX_FRAME_AGE_S = 2.0   # older than this -> treat the stream as stale
     _SEGMENT_S = 175         # respawn before screenrecord's 180s hard limit
 
-    def __init__(self, serial, adb_path):
+    def __init__(self, serial, adb_path, bit_rate=16000000):
         self.serial = serial
         self.adb_path = adb_path
+        self.bit_rate = bit_rate
         self._lock = threading.Lock()
         self._frame = None
         self._frame_t = 0.0
@@ -40,7 +41,7 @@ class _StreamCapture:
             try:
                 self._proc = subprocess.Popen(
                     [self.adb_path, "-s", self.serial, "exec-out", "screenrecord",
-                     "--output-format=h264", "--bit-rate=16000000",
+                     "--output-format=h264", f"--bit-rate={self.bit_rate}",
                      f"--time-limit={self._SEGMENT_S}", "-"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
@@ -103,7 +104,15 @@ class Device:
         self.serial = serial
         self.adb_path = adb_path
         self._local_cap = os.path.join(tempfile.gettempdir(), f"_pogo_cap_{serial}.raw")
-        self._stream = _StreamCapture(serial, adb_path) if stream else None
+        # A wireless (ip:port) link can't carry the full 16 Mbit H.264 stream
+        # without packet loss corrupting the decode (live: constant "error while
+        # decoding MB" -> zero usable frames). A lower bitrate survives Wi-Fi;
+        # full resolution is KEPT so tap coordinates stay 1:1 with the phone.
+        wireless = ":" in serial
+        self._stream_bitrate = 4000000 if wireless else 16000000
+        self._stream_enabled = stream    # remember so start_stream() can respawn
+        self._stream = (_StreamCapture(serial, adb_path, bit_rate=self._stream_bitrate)
+                        if stream else None)
         self.tap_lead_s = self.TAP_LEAD_STREAM_S if stream else self.TAP_LEAD_PULL_S
         self._input_proc = None
         self._input_lock = threading.Lock()
@@ -236,3 +245,95 @@ class Device:
     def set_stay_awake(self):
         """Keep the display on while powered (USB), so it never sleeps mid-run."""
         self._run("shell", "svc", "power", "stayon", "true")
+
+    # --- mirroring / power control -----------------------------------------
+    # "Mirroring" = the live screen stream (screenrecord) + the display staying
+    # on for it. Turning it OFF stops the stream AND powers the display down so
+    # a paused/charging phone actually rests and charges faster; turning it back
+    # ON wakes the screen and respawns the stream.
+    def sleep_screen(self):
+        """Power the display OFF (drop stay-awake, then send SLEEP)."""
+        self._run("shell", "svc", "power", "stayon", "false")
+        self._input("input keyevent 223")   # KEYCODE_SLEEP
+
+    def wake_screen(self):
+        """Power the display back ON and pin it awake."""
+        self._input("input keyevent KEYCODE_WAKEUP")
+        self._run("shell", "svc", "power", "stayon", "true")
+
+    def stop_stream(self):
+        """Tear down the screenrecord stream (frees phone CPU + USB/Wi-Fi)."""
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+
+    def start_stream(self):
+        """Respawn the screenrecord stream if streaming was configured on."""
+        if self._stream_enabled and self._stream is None:
+            self._stream = _StreamCapture(
+                self.serial, self.adb_path, bit_rate=self._stream_bitrate)
+
+    def battery_level(self):
+        """(level_pct:int|None, charging:bool) from `dumpsys battery`. ~200ms, so
+        callers poll it infrequently (every ~30s), never per tick."""
+        try:
+            r = subprocess.run(
+                [self.adb_path, "-s", self.serial, "shell", "dumpsys", "battery"],
+                capture_output=True, text=True, timeout=4,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None, False
+        level, charging = None, False
+        for line in r.stdout.splitlines():
+            s = line.strip()
+            if s.startswith("level:"):
+                try:
+                    level = int(s.split(":", 1)[1])
+                except ValueError:
+                    pass
+            elif s.startswith("status:"):          # 2 = charging, 5 = full
+                charging = s.split(":", 1)[1].strip() in ("2", "5")
+            elif ("powered:" in s) and "true" in s:  # AC/USB/wireless powered
+                charging = True
+        return level, charging
+
+    def is_responsive(self, timeout=2.5):
+        """True if adb can still reach this device (state == 'device'). A wireless
+        link that has dropped returns False here even though the last streamed
+        frame is still sitting in memory -- so the caller can tell a DEAD LINK
+        (reconnect) from a HUNG APP (restart) instead of confusing the two."""
+        try:
+            r = subprocess.run(
+                [self.adb_path, "-s", self.serial, "get-state"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return r.stdout.strip() == "device"
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+    def reconnect(self):
+        """Re-establish a dropped WIRELESS adb link (`adb connect <ip:port>`).
+        No-op for USB serials. Returns True if the device is reachable after.
+        Wi-Fi links drop on power-save / roaming; auto-reconnecting keeps an
+        unplugged, charging phone running without a human re-pairing it."""
+        if ":" not in self.serial:
+            return False  # USB device -- nothing to reconnect
+        try:
+            subprocess.run(
+                [self.adb_path, "connect", self.serial],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return False
+        return self.is_responsive()
+
+    def restart_app(self, package="com.nianticlabs.pokemongo"):
+        """Force-stop and relaunch the game. Called when the loop detects the
+        app has HUNG (a frozen PoGo swallows every tap -- live: hundreds of
+        'nothing' taps, 0 catches, and the screen frozen even to a finger). A
+        fresh launch clears it; the client caches the session and returns to the
+        map on its own."""
+        self._run("shell", "am", "force-stop", package)
+        time.sleep(1.0)
+        self._run("shell", "monkey", "-p", package,
+                  "-c", "android.intent.category.LAUNCHER", "1")
