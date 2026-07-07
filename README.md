@@ -35,27 +35,28 @@ Built from scratch in Python: real-time video pipeline, on-device actuation, a c
 
 ## Architecture
 
-```
- ┌─────────── per phone (one worker thread) ───────────┐
- │                                                      │
- │   H.264 stream ──▶ classify screen state             │
- │   (~1.3ms/frame)        │                            │
- │                ┌────────┼───────────────┐            │
- │              MAP     ENCOUNTER        MENU/UNKNOWN    │
- │                │         │                │          │
- │          YOLO detect   throw loop      recover       │
- │          + tap-point   (until caught)  (close menu)  │
- │          selection       │                           │
- │                │    verify-before-throw              │
- │              tap    (never throws until the          │
- │                      encounter UI is confirmed)      │
- │                │                                      │
- │         log every tap ──▶ self-label ──▶ dataset/    │
- └──────────────────────────────────────────────────────┘
-                              │
-        dataset ──▶ train/val split (dense-frame oversampling)
-                 ──▶ YOLO11 fine-tune (RTX 4090) ──▶ best.pt / ONNX
-                 ──▶ gate on held-out metrics ──▶ swap live model
+```mermaid
+flowchart TD
+    subgraph loop["Runtime loop &mdash; one worker thread per phone"]
+        direction TB
+        stream["H.264 stream<br/>~1.3 ms / frame"] --> classify{"classify<br/>screen state"}
+        classify -->|MAP| detect["YOLO detect<br/>+ tap-point selection"]
+        classify -->|ENCOUNTER| throw["throw loop<br/>(until caught)"]
+        classify -->|"MENU / UNKNOWN"| recover["recover<br/>(close the menu)"]
+        detect --> tap["tap target"]
+        tap --> verify{"encounter UI<br/>confirmed?"}
+        verify -->|yes| throw
+        verify -->|no| recover
+        throw --> selflabel["log tap &rarr; self-label"]
+    end
+    subgraph fly["Training flywheel"]
+        direction TB
+        selflabel --> dataset[("dataset")]
+        dataset --> split["train / val split<br/>dense-frame oversampling"]
+        split --> train["YOLO11 fine-tune (RTX 4090)<br/>&rarr; best.pt / ONNX"]
+        train --> gate{"clears<br/>val bar?"}
+    end
+    gate -->|"yes &rarr; swap live model"| detect
 ```
 
 **Perception → decision → actuation, verified at every step.** Two structural safety invariants are enforced in code *and* covered by tests: the agent never actuates a throw until the target UI is confirmed present, and its recovery path can never itself trigger one. This is the difference between a demo and something that runs unattended for hours.
