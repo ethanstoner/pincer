@@ -27,7 +27,7 @@ class ScreenState(Enum):
 # two fixed-position UI buttons that are ABSENT/different on the map:
 #   - berry button, bottom-left   ~ratio (0.12, 0.90)  -> src/templates/enc_berry.png
 #   - ball-select button, bottom-right ~ratio (0.87, 0.90) -> src/templates/enc_ballselect.png
-# (The far-left the client menu strip is deliberately avoided — it appears on both
+# (The far-left client menu strip is deliberately avoided — it appears on both
 # map and encounter.) Templates were cropped from encounter.png and ship in
 # src/templates/ so the module does not depend on tests/.
 #

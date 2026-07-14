@@ -53,7 +53,7 @@ class Target:
 
 
 # --- Central detection region (ratios of width/height) ---
-# x: left edge past the the client menu / nearby-list strip (< 0.10 w); right edge
+# x: left edge past the client menu / nearby-list strip (< 0.10 w); right edge
 #    trimmed at 0.95 w. y: TOP boundary 0.40 h drops the whole top gym/raid band
 #    AND both fixed UI buttons (the "recenter" Poke Ball at y-ratio ~0.24 and
 #    the rocket/compass arrow at y-ratio ~0.12 -- measured cand_09/cand_11);
